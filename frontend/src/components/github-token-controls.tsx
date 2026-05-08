@@ -174,6 +174,7 @@ export function GitHubTokenControls({ showConnectedUser = true }: { showConnecte
 
       <label className="stack">
         <span>{hasGitHubDeviceAuthProxy() ? 'Manual token fallback' : 'Personal access token'}</span>
+        <div className="muted small">Create or manage tokens at <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">github.com/settings/tokens</a>.</div>
         <textarea className="form-control" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="github_pat_..." />
       </label>
       <div className="controls">
