@@ -11,6 +11,7 @@ type AppContextValue = {
   setStorageMode: (mode: StorageMode) => void
   setShow: (show: InboxShow) => void
   setAutoRefreshSeconds: (seconds: number) => void
+  setAutoOpenLinesThreshold: (threshold: number) => void
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -52,6 +53,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setStorageMode,
     setShow: (show: InboxShow) => persistPreferences({ ...preferences, show }),
     setAutoRefreshSeconds: (seconds: number) => persistPreferences({ ...preferences, autoRefreshSeconds: seconds }),
+    setAutoOpenLinesThreshold: (threshold: number) => persistPreferences({ ...preferences, autoOpenLinesThreshold: threshold }),
   }), [token, storageMode, preferences])
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

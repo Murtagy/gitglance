@@ -369,14 +369,14 @@ function PreviewSection({
   onMarkRead: () => void
   markingRead: boolean
 }) {
-  const { token } = useAppContext()
+  const { token, preferences } = useAppContext()
   const pr = preview?.pullRequest
   const [filesMode, setFilesMode] = useState<'files' | 'lines'>('files')
   const parsed = useMemo(() => parsePullRequestApiUrl(thread.subjectUrl), [thread.subjectUrl])
   const defaultFilesMode = useMemo<'files' | 'lines'>(() => {
     if (!pr) return 'files'
-    return (pr.additions + pr.deletions) <= 12 ? 'lines' : 'files'
-  }, [pr])
+    return (pr.additions + pr.deletions) <= preferences.autoOpenLinesThreshold ? 'lines' : 'files'
+  }, [pr, preferences.autoOpenLinesThreshold])
 
   const patchesQuery = useQuery({
     queryKey: ['pr-files', thread.id],

@@ -113,6 +113,7 @@ export async function loadPreviewSnapshot(threadId: string): Promise<PreviewSnap
 const DEFAULT_PREFERENCES: Preferences = {
   show: 'unread',
   autoRefreshSeconds: 120,
+  autoOpenLinesThreshold: 12,
   storageMode: 'session',
 }
 

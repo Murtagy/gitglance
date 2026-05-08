@@ -4,7 +4,7 @@ import { GitHubTokenControls } from '../components/github-token-controls'
 import { clearAllCaches } from '../lib/storage'
 
 export function SettingsPage() {
-  const { preferences, setAutoRefreshSeconds } = useAppContext()
+  const { preferences, setAutoRefreshSeconds, setAutoOpenLinesThreshold } = useAppContext()
   const [clearingCache, setClearingCache] = useState(false)
   const [cacheMessage, setCacheMessage] = useState('')
 
@@ -38,6 +38,10 @@ export function SettingsPage() {
           <label className="stack">
             <span>Auto refresh seconds</span>
             <input className="form-control" type="number" min={30} step={30} value={preferences.autoRefreshSeconds} onChange={(event) => setAutoRefreshSeconds(Math.max(30, Number(event.target.value) || 120))} />
+          </label>
+          <label className="stack">
+            <span>Open "Show lines" by default when total changed lines are at most</span>
+            <input className="form-control" type="number" min={0} step={1} value={preferences.autoOpenLinesThreshold} onChange={(event) => setAutoOpenLinesThreshold(Math.max(0, Number(event.target.value) || 0))} />
           </label>
           <div className="notice">Offline: app keeps last inbox snapshot and preview cache in browser IndexedDB.</div>
           <div className="controls">

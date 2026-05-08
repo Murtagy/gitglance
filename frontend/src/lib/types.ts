@@ -146,5 +146,6 @@ export type PreviewSnapshot = {
 export type Preferences = {
   show: InboxShow
   autoRefreshSeconds: number
+  autoOpenLinesThreshold: number
   storageMode: StorageMode
 }
