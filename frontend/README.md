@@ -84,9 +84,10 @@ Worker source in repo:
 
 Worker goals:
 
-- only broker device flow start + poll
+- broker device flow start + poll
+- proxy notification mark-read
 - no persistent token storage
-- no GitHub API proxying after auth
+- no broad GitHub API proxying after auth
 
 ## GitHub Pages
 

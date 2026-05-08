@@ -57,3 +57,28 @@ export async function startGitHubDeviceFlow(): Promise<DeviceFlowStartResponse> 
 export async function pollGitHubDeviceFlow(deviceCode: string): Promise<DeviceFlowPollResponse> {
   return postJSON<DeviceFlowPollResponse>('/github/device/poll', { deviceCode }, true)
 }
+
+export async function proxyMarkThreadRead(token: string, threadId: string): Promise<void> {
+  const baseUrl = authProxyBaseUrl()
+  if (!baseUrl) throw new Error('GitHub auth proxy not configured')
+
+  const response = await fetch(`${baseUrl}/github/notifications/threads/${encodeURIComponent(threadId)}/mark-read`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ token }),
+  })
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    const message = typeof data?.error_description === 'string'
+      ? data.error_description
+      : typeof data?.error === 'string'
+        ? data.error
+        : `GitHub auth proxy failed (${response.status})`
+    throw new Error(message)
+  }
+}

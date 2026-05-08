@@ -61,7 +61,7 @@ async function setValue<T>(key: string, value: T): Promise<void> {
   })
 }
 
-export async function clearPreviewCaches(): Promise<void> {
+async function clearKeysMatching(predicate: (key: string) => boolean): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(KV_STORE, 'readwrite')
@@ -73,13 +73,25 @@ export async function clearPreviewCaches(): Promise<void> {
         resolve()
         return
       }
-      if (String(cursor.key).startsWith('preview:')) {
+      if (predicate(String(cursor.key))) {
         cursor.delete()
       }
       cursor.continue()
     }
     cursorRequest.onerror = () => reject(cursorRequest.error)
   })
+}
+
+export async function clearPreviewCaches(): Promise<void> {
+  return clearKeysMatching((key) => key.startsWith('preview:'))
+}
+
+export async function clearInboxCaches(): Promise<void> {
+  return clearKeysMatching((key) => key.startsWith('inbox:'))
+}
+
+export async function clearAllCaches(): Promise<void> {
+  return clearKeysMatching((key) => key.startsWith('preview:') || key.startsWith('inbox:'))
 }
 
 export async function saveInboxSnapshot(snapshot: InboxSnapshot): Promise<void> {

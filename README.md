@@ -47,23 +47,17 @@ Pure client-side SPA.
 - local cache + offline last snapshot
 - GitHub Pages hosting
 
-## Local development
+## Super simple local run
 
 Requirements:
 
 - Node.js 22+
 
-Install:
+Run:
 
 ```bash
 cd frontend
 npm install
-```
-
-Run dev server:
-
-```bash
-cd frontend
 npm run dev
 ```
 
@@ -71,6 +65,30 @@ Open:
 
 - http://localhost:5173/
   - or URL Vite prints
+
+No auth proxy required for local testing:
+- paste GitHub token manually in app
+
+## Local production-like run
+
+```bash
+cd frontend
+VITE_APP_BASE_PATH=/ npm run build
+npm run preview
+```
+
+## Self-hosting
+
+Full guide:
+
+- `SELF_HOSTING.md`
+
+Short version:
+
+- build `frontend/dist/`
+- serve static files on any static host
+- optionally deploy `proxy/github-auth-worker.js` for GitHub device-flow login
+- otherwise users can paste GitHub token manually
 
 ## Test
 
@@ -114,7 +132,13 @@ Current storage behavior:
 
 ## GitHub auth proxy
 
-Setup instructions:
+GitHub login endpoints are not browser-CORS friendly, so pure SPA device flow needs a tiny auth broker.
+
+Setup and deploy details:
+
+- `SELF_HOSTING.md`
+
+Quickstart:
 
 - GitHub OAuth App: `GitHub -> Settings -> Developer settings -> OAuth Apps -> New OAuth App`
 - Cloudflare Worker config: `proxy/wrangler.toml`
@@ -124,21 +148,9 @@ Setup instructions:
 Deploy quickstart:
 
 ```bash
-cd proxy
-wrangler secret put GITHUB_CLIENT_ID
-wrangler deploy
-```
-
-If running Wrangler from repo root, pass config explicitly:
-
-```bash
 wrangler secret put GITHUB_CLIENT_ID --config proxy/wrangler.toml
 wrangler deploy --config proxy/wrangler.toml
 ```
-
-## GitHub auth proxy
-
-GitHub login endpoints are not browser-CORS friendly, so pure SPA device flow needs a tiny auth broker.
 
 Worker source:
 
@@ -161,10 +173,10 @@ Then configure Worker env vars in Cloudflare dashboard or Wrangler:
 Design goals:
 
 - only handles GitHub OAuth device-flow bootstrap + polling
-- no GitHub API proxying
+- only extra GitHub API proxying is notification mark-read
 - no database
 - no token persistence by design
-- final GitHub token returned to browser, then browser talks to `api.github.com` directly
+- final GitHub token returned to browser, then browser talks to `api.github.com` directly for normal reads/previews
 
 Required Worker env vars:
 
@@ -184,6 +196,7 @@ Frontend env:
 Transparency note:
 
 - proxy can see OAuth tokens in transit during exchange
+- proxy can also see token on proxied mark-read calls
 - proxy should be kept stateless, open source, and narrowly scoped
 - after exchange, token lives in browser storage chosen by user
 
