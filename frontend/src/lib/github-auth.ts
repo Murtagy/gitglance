@@ -1,3 +1,5 @@
+const DEFAULT_GITHUB_AUTH_PROXY_URL = 'https://gitglance-auth-proxy.murtagy.workers.dev'
+
 type DeviceFlowStartResponse = {
   device_code: string
   user_code: string
@@ -16,7 +18,7 @@ type DeviceFlowPollResponse = {
 }
 
 function authProxyBaseUrl(): string {
-  return (import.meta.env.VITE_GITHUB_AUTH_PROXY_URL ?? '').trim().replace(/\/+$/, '')
+  return (import.meta.env.VITE_GITHUB_AUTH_PROXY_URL ?? DEFAULT_GITHUB_AUTH_PROXY_URL).trim().replace(/\/+$/, '')
 }
 
 export function hasGitHubDeviceAuthProxy(): boolean {

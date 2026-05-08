@@ -32,11 +32,11 @@ npm install
 npm run dev
 ```
 
-Optional local auth-proxy config:
+Optional local auth-proxy override:
 
 ```bash
 cp .env.example .env.local
-# default example points to public proxy URL
+# set VITE_GITHUB_AUTH_PROXY_URL only if using your own proxy
 ```
 
 ## Build
@@ -74,7 +74,7 @@ For deploy/setup instructions, see:
 
 GitHub OAuth/device-flow login endpoints do not work cleanly from pure browser code because of GitHub login endpoint limitations. This app can use a tiny auth broker instead.
 
-Expected frontend env:
+Expected frontend env for custom self-hosting override:
 
 - `VITE_GITHUB_AUTH_PROXY_URL`
 

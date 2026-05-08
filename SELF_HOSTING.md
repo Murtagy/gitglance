@@ -149,6 +149,12 @@ Example allowed origins:
 
 ### Frontend config for proxy
 
+Official hosted app already defaults to:
+
+- `https://gitglance-auth-proxy.murtagy.workers.dev`
+
+Self-hosters can override proxy URL.
+
 Create local env file:
 
 ```bash
@@ -156,10 +162,10 @@ cd frontend
 cp .env.example .env.local
 ```
 
-Set:
+Set for custom proxy:
 
 ```bash
-VITE_GITHUB_AUTH_PROXY_URL=https://gitglance-auth-proxy.murtagy.workers.dev
+VITE_GITHUB_AUTH_PROXY_URL=https://your-worker.example.workers.dev
 VITE_APP_BASE_PATH=/
 ```
 
@@ -169,7 +175,7 @@ Then run/build again.
 
 - build frontend with correct `VITE_APP_BASE_PATH`
 - serve `frontend/dist/`
-- if using auth proxy, deploy worker and set `VITE_GITHUB_AUTH_PROXY_URL`
+- if using custom auth proxy, deploy worker and set `VITE_GITHUB_AUTH_PROXY_URL`
 - verify login or manual token flow works
 - verify GitHub API calls succeed from browser
 - verify mark-read works through proxy
