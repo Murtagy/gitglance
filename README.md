@@ -143,7 +143,7 @@ Quickstart:
 - GitHub OAuth App: `GitHub -> Settings -> Developer settings -> OAuth Apps -> New OAuth App`
 - Cloudflare Worker config: `proxy/wrangler.toml`
 - Worker source: `proxy/github-auth-worker.js`
-- GitHub Pages build secret: `Settings -> Secrets and variables -> Actions -> VITE_GITHUB_AUTH_PROXY_URL`
+- Public frontend build variable: `Settings -> Secrets and variables -> Actions -> Variables -> VITE_GITHUB_AUTH_PROXY_URL`
 
 Deploy quickstart:
 
@@ -191,7 +191,7 @@ Optional Worker env vars:
 Frontend env:
 
 - `frontend/.env.example`
-- `VITE_GITHUB_AUTH_PROXY_URL=https://your-worker-or-domain`
+- `VITE_GITHUB_AUTH_PROXY_URL=https://gitglance-auth-proxy.murtagy.workers.dev`
 
 Transparency note:
 

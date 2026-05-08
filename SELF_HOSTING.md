@@ -159,7 +159,7 @@ cp .env.example .env.local
 Set:
 
 ```bash
-VITE_GITHUB_AUTH_PROXY_URL=https://your-worker.example.workers.dev
+VITE_GITHUB_AUTH_PROXY_URL=https://gitglance-auth-proxy.murtagy.workers.dev
 VITE_APP_BASE_PATH=/
 ```
 

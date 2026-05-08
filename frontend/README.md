@@ -36,7 +36,7 @@ Optional local auth-proxy config:
 
 ```bash
 cp .env.example .env.local
-# set VITE_GITHUB_AUTH_PROXY_URL
+# default example points to public proxy URL
 ```
 
 ## Build
