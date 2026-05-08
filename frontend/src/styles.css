@@ -54,6 +54,17 @@ button { cursor: pointer; }
 .btn.success { background: #166534; }
 .btn.warn { background: #2563eb; }
 .btn.ghost { background: #f9fafb; color: #111827; border-color: #e5e7eb; }
+.btn.mark-read-btn {
+  background: #ffffff;
+  color: #111827;
+  border-color: #d1d5db;
+  border-radius: 10px;
+  min-width: 40px;
+  padding: 8px 10px;
+}
+.btn.mark-read-btn:hover {
+  background: #f9fafb;
+}
 .badge {
   display: inline-flex;
   align-items: center;
