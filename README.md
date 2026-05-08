@@ -53,21 +53,32 @@ Requirements:
 
 - Node.js 22+
 
-Run:
+One command:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install
+cd .. && ./dev.sh
 ```
 
 Open:
 
 - http://localhost:5173/
-  - or URL Vite prints
 
-No auth proxy required for local testing:
-- paste GitHub token manually in app
+What this does:
+- starts frontend dev server
+- starts local Node proxy for mark-read
+- local dev expects manual GitHub token input
+- no Wrangler needed
+- no local OAuth setup needed
+
+Alternative frontend-only run:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Then paste GitHub token manually in app.
 
 ## Local production-like run
 
@@ -87,7 +98,8 @@ Short version:
 
 - build `frontend/dist/`
 - serve static files on any static host
-- optionally deploy `proxy/github-auth-worker.js` for GitHub device-flow login
+- optional auth proxy for GitHub device-flow login
+- mark-read can use either public proxy, Cloudflare Worker, or local Node proxy
 - otherwise users can paste GitHub token manually
 
 ## Test

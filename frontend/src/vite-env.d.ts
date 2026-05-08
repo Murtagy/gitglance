@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_GITHUB_AUTH_PROXY_URL?: string
+  readonly VITE_GITHUB_MARK_READ_PROXY_URL?: string
 }
 
 interface ImportMeta {

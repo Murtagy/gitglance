@@ -21,8 +21,18 @@ function authProxyBaseUrl(): string {
   return (import.meta.env.VITE_GITHUB_AUTH_PROXY_URL ?? DEFAULT_GITHUB_AUTH_PROXY_URL).trim().replace(/\/+$/, '')
 }
 
+function markReadProxyBaseUrl(): string {
+  const explicit = import.meta.env.VITE_GITHUB_MARK_READ_PROXY_URL
+  if (typeof explicit === 'string') return explicit.trim().replace(/\/+$/, '')
+  return authProxyBaseUrl()
+}
+
 export function hasGitHubDeviceAuthProxy(): boolean {
   return Boolean(authProxyBaseUrl())
+}
+
+export function hasGitHubMarkReadProxy(): boolean {
+  return Boolean(markReadProxyBaseUrl())
 }
 
 async function postJSON<T>(path: string, body: Record<string, unknown>, allowErrorResponse = false): Promise<T> {
@@ -61,8 +71,8 @@ export async function pollGitHubDeviceFlow(deviceCode: string): Promise<DeviceFl
 }
 
 export async function proxyMarkThreadRead(token: string, threadId: string): Promise<void> {
-  const baseUrl = authProxyBaseUrl()
-  if (!baseUrl) throw new Error('GitHub auth proxy not configured')
+  const baseUrl = markReadProxyBaseUrl()
+  if (!baseUrl) throw new Error('GitHub mark-read proxy not configured')
 
   const response = await fetch(`${baseUrl}/github/notifications/threads/${encodeURIComponent(threadId)}/mark-read`, {
     method: 'POST',

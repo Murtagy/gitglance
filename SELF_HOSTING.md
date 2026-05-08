@@ -13,16 +13,21 @@ Needed parts:
 Dev mode:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install
+cd .. && ./dev.sh
 ```
 
 Open:
 - http://localhost:5173/
 
-If you do not set up auth proxy yet:
-- use manual GitHub token entry in app
+This starts:
+- frontend dev server
+- local Node proxy for mark-read
+
+Local development expectation:
+- use manual GitHub token entry
+- no local OAuth setup needed
+- no Wrangler needed
 
 ## Simplest local production-like run
 
@@ -105,16 +110,21 @@ Users need GitHub token with scopes like:
 
 Then they paste token into app.
 
-## Optional auth proxy setup
+## Proxy options
 
-Why:
+Why proxy exists:
 - GitHub login/device-flow endpoints not browser-CORS friendly
 - GitHub notification mark-read `PATCH` is also unreliable from browser because of CORS
-- tiny proxy starts/polls device flow and proxies mark-read only
 
-Files:
+Local/simple option:
+- `proxy/local-proxy.mjs`
+- used by `./dev.sh`
+- intended for manual-token local development
+
+Cloudflare Worker option:
 - `proxy/github-auth-worker.js`
 - `proxy/wrangler.toml`
+- needed only if you want your own hosted OAuth device-flow proxy
 
 ### GitHub OAuth App
 
@@ -162,12 +172,17 @@ cd frontend
 cp .env.example .env.local
 ```
 
-Set for custom proxy:
+Set for custom hosted OAuth proxy:
 
 ```bash
 VITE_GITHUB_AUTH_PROXY_URL=https://your-worker.example.workers.dev
+VITE_GITHUB_MARK_READ_PROXY_URL=https://your-worker.example.workers.dev
 VITE_APP_BASE_PATH=/
 ```
+
+For local manual-token development, `./dev.sh` already sets:
+- empty OAuth proxy URL
+- local mark-read proxy URL
 
 Then run/build again.
 
@@ -175,7 +190,7 @@ Then run/build again.
 
 - build frontend with correct `VITE_APP_BASE_PATH`
 - serve `frontend/dist/`
-- if using custom auth proxy, deploy worker and set `VITE_GITHUB_AUTH_PROXY_URL`
+- if using custom hosted auth proxy, deploy worker and set proxy env vars
 - verify login or manual token flow works
 - verify GitHub API calls succeed from browser
 - verify mark-read works through proxy
@@ -187,3 +202,4 @@ Then run/build again.
 - never commit GitHub tokens
 - prefer browser `sessionStorage` default for shared machines
 - auth proxy should stay stateless and minimal
+- local manual-token development does not need OAuth proxy at all

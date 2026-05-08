@@ -373,6 +373,10 @@ function PreviewSection({
   const pr = preview?.pullRequest
   const [filesMode, setFilesMode] = useState<'files' | 'lines'>('files')
   const parsed = useMemo(() => parsePullRequestApiUrl(thread.subjectUrl), [thread.subjectUrl])
+  const defaultFilesMode = useMemo<'files' | 'lines'>(() => {
+    if (!pr) return 'files'
+    return (pr.additions + pr.deletions) <= 12 ? 'lines' : 'files'
+  }, [pr])
 
   const patchesQuery = useQuery({
     queryKey: ['pr-files', thread.id],
@@ -393,8 +397,8 @@ function PreviewSection({
   }, [patchesQuery.data, pr])
 
   useEffect(() => {
-    setFilesMode('files')
-  }, [thread.id])
+    setFilesMode(defaultFilesMode)
+  }, [defaultFilesMode, thread.id])
 
   return (
     <div className="stack" style={{ gap: 16 }}>

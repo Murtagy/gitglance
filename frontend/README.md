@@ -26,9 +26,17 @@ Main repo docs live in:
 
 ## Run
 
+Simplest repo-level local run:
+
+```bash
+cd frontend && npm install
+cd .. && ./dev.sh
+```
+
+Frontend-only run:
+
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
@@ -36,7 +44,7 @@ Optional local auth-proxy override:
 
 ```bash
 cp .env.example .env.local
-# set VITE_GITHUB_AUTH_PROXY_URL only if using your own proxy
+# set custom proxy env vars only if using your own hosted proxy
 ```
 
 ## Build
@@ -77,14 +85,16 @@ GitHub OAuth/device-flow login endpoints do not work cleanly from pure browser c
 Expected frontend env for custom self-hosting override:
 
 - `VITE_GITHUB_AUTH_PROXY_URL`
+- `VITE_GITHUB_MARK_READ_PROXY_URL`
 
-Worker source in repo:
+Proxy sources in repo:
 
 - `../proxy/github-auth-worker.js`
+- `../proxy/local-proxy.mjs`
 
-Worker goals:
+Proxy goals:
 
-- broker device flow start + poll
+- optional device flow start + poll for hosted OAuth proxy
 - proxy notification mark-read
 - no persistent token storage
 - no broad GitHub API proxying after auth

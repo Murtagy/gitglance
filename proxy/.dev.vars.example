@@ -1,0 +1,6 @@
+# Optional. Needed only if you want local GitHub OAuth device-flow login.
+# For normal local development, manual token input is expected.
+# GITHUB_CLIENT_ID=your_github_oauth_app_client_id
+
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+GITHUB_SCOPE=notifications repo read:user

@@ -10,3 +10,6 @@ frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
 .wrangler/
+proxy/.dev.vars
+proxy/.dev.vars.*
+!proxy/.dev.vars.example

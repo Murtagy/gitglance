@@ -1,4 +1,4 @@
-import { hasGitHubDeviceAuthProxy, proxyMarkThreadRead } from './github-auth'
+import { hasGitHubMarkReadProxy, proxyMarkThreadRead } from './github-auth'
 import type { NotificationThread, PRFile, PullRequestData, ThreadPreview, Viewer } from './types'
 
 const GITHUB_API_URL = 'https://api.github.com'
@@ -96,7 +96,7 @@ export async function fetchNotifications(token: string, show: 'unread' | 'all'):
 }
 
 export async function markThreadRead(token: string, threadId: string): Promise<void> {
-  if (hasGitHubDeviceAuthProxy()) {
+  if (hasGitHubMarkReadProxy()) {
     await proxyMarkThreadRead(token, threadId)
     rememberRecentlyReadThread(threadId)
     return
