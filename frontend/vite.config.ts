@@ -19,11 +19,14 @@ function normalizeBasePath(value?: string) {
   return withLeadingSlash.endsWith('/') ? withLeadingSlash : `${withLeadingSlash}/`
 }
 
-function contentSecurityPolicy(authProxyUrl?: string) {
-  const connectSrc = ["'self'", 'https://api.github.com']
-  if (authProxyUrl) {
-    connectSrc.push(authProxyUrl)
-  }
+const DEFAULT_GITHUB_AUTH_PROXY_URL = 'https://gitglance-auth-proxy.murtagy.workers.dev'
+
+function normalizeUrl(value?: string) {
+  return (value ?? '').trim().replace(/\/+$/, '')
+}
+
+function contentSecurityPolicy(proxyUrls: string[]) {
+  const connectSrc = ["'self'", 'https://api.github.com', ...new Set(proxyUrls.filter(Boolean))]
 
   return [
     "default-src 'self'",
@@ -43,7 +46,8 @@ function contentSecurityPolicy(authProxyUrl?: string) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const authProxyUrl = env.VITE_GITHUB_AUTH_PROXY_URL?.trim().replace(/\/+$/, '')
+  const authProxyUrl = normalizeUrl(env.VITE_GITHUB_AUTH_PROXY_URL) || DEFAULT_GITHUB_AUTH_PROXY_URL
+  const markReadProxyUrl = normalizeUrl(env.VITE_GITHUB_MARK_READ_PROXY_URL) || authProxyUrl
   const base = normalizeBasePath(env.VITE_APP_BASE_PATH || (mode === 'production' ? '/gitglance/' : '/'))
 
   return {
@@ -54,7 +58,7 @@ export default defineConfig(({ mode }) => {
         name: 'inject-csp-meta',
         transformIndexHtml(html) {
           if (mode !== 'production') return html
-          const csp = contentSecurityPolicy(authProxyUrl)
+          const csp = contentSecurityPolicy([authProxyUrl, markReadProxyUrl])
           return html.replace(
             '</head>',
             `    <meta http-equiv="Content-Security-Policy" content="${csp}">\n  </head>`,
