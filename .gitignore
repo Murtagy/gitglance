@@ -1,0 +1,12 @@
+.DS_Store
+.last-dev-launch.pid
+db.sqlite
+tmp.sqlite
+.env
+.env.*
+!.env.example
+!frontend/.env.example
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+.wrangler/

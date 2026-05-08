@@ -1,0 +1,7 @@
+name = "gitglance-auth-proxy"
+main = "github-auth-worker.js"
+compatibility_date = "2026-05-08"
+
+[vars]
+ALLOWED_ORIGINS = "https://murtagy.github.io,http://localhost:5173"
+GITHUB_SCOPE = "notifications repo read:user"
