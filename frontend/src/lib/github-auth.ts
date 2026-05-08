@@ -17,14 +17,16 @@ type DeviceFlowPollResponse = {
   interval?: number
 }
 
+function normalizeUrl(value?: string): string {
+  return (value ?? '').trim().replace(/\/+$/, '')
+}
+
 function authProxyBaseUrl(): string {
-  return (import.meta.env.VITE_GITHUB_AUTH_PROXY_URL ?? DEFAULT_GITHUB_AUTH_PROXY_URL).trim().replace(/\/+$/, '')
+  return normalizeUrl(import.meta.env.VITE_GITHUB_AUTH_PROXY_URL) || DEFAULT_GITHUB_AUTH_PROXY_URL
 }
 
 function markReadProxyBaseUrl(): string {
-  const explicit = import.meta.env.VITE_GITHUB_MARK_READ_PROXY_URL
-  if (typeof explicit === 'string') return explicit.trim().replace(/\/+$/, '')
-  return authProxyBaseUrl()
+  return normalizeUrl(import.meta.env.VITE_GITHUB_MARK_READ_PROXY_URL) || authProxyBaseUrl()
 }
 
 export function hasGitHubDeviceAuthProxy(): boolean {
