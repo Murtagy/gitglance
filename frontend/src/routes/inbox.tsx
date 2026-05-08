@@ -185,8 +185,9 @@ export function InboxPage() {
       }
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['notifications', token] })
-      await notificationsQuery.refetch()
+      window.setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: ['notifications', token] })
+      }, 5000)
     },
   })
 
@@ -318,7 +319,7 @@ export function InboxPage() {
                 {thread.unread ? (
                   <button
                     type="button"
-                    className="btn success"
+                    className="btn mark-read-btn"
                     onClick={(event) => {
                       event.stopPropagation()
                       markReadMutation.mutate(thread)
