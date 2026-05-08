@@ -26,12 +26,6 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <div className="card" style={{ padding: 24 }}>
-        <div className="stack">
-          <h2 style={{ margin: 0 }}>Deprecation</h2>
-          <p className="muted">Legacy Go backend stays only until this SPA reaches feature parity and validation. Then remove backend fully.</p>
-        </div>
-      </div>
     </div>
   )
 }
