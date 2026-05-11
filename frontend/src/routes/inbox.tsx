@@ -213,6 +213,24 @@ export function InboxPage() {
   }, [selectedThread?.id])
 
   useEffect(() => {
+    const refocusSelectedRow = () => {
+      if (document.hidden || !selectedThread) return
+      window.setTimeout(() => rowRefs.current[selectedThread.id]?.focus(), 0)
+    }
+
+    const onVisibilityChange = () => {
+      refocusSelectedRow()
+    }
+
+    window.addEventListener('focus', refocusSelectedRow)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('focus', refocusSelectedRow)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [selectedThread?.id])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement | null)?.tagName
       if (tag && ['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
@@ -246,8 +264,8 @@ export function InboxPage() {
       }
     }
 
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
   }, [markReadMutation, navigate, refreshMutation, selectedThread, threads])
 
   if (!token) {
