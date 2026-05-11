@@ -11,6 +11,13 @@ import type { InboxShow, NotificationThread, PRFile, PullRequestData, ThreadPrev
 
 const PREVIEW_CACHE_TTL_MS = 60_000
 
+function isRefreshOverdue(savedAt: string | undefined, autoRefreshSeconds: number): boolean {
+  if (!savedAt) return true
+  const savedAtMs = new Date(savedAt).getTime()
+  if (Number.isNaN(savedAtMs)) return true
+  return (Date.now() - savedAtMs) >= Math.max(autoRefreshSeconds, 30) * 1000
+}
+
 function activityBadge(value: string) {
   return <span className="badge blue">{value}</span>
 }
@@ -47,6 +54,22 @@ function patchLineClass(line: string) {
   return 'patch-line'
 }
 
+function updateFavicon(hasUnseenChanges: boolean, syncing: boolean) {
+  const backgroundFill = hasUnseenChanges ? '%23facc15' : 'white'
+  const backgroundStroke = hasUnseenChanges ? '%23a16207' : '%23111827'
+  const badge = syncing
+    ? "%3Ccircle cx='47' cy='17' r='8' fill='%233b82f6' stroke='white' stroke-width='3'/%3E"
+    : ''
+  const href = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='22' fill='${backgroundFill}' stroke='${backgroundStroke}' stroke-width='4'/%3E%3Cpath d='M32 16c-6.6 0-12 5.4-12 12v7.2c0 2.2-.8 4.4-2.3 6l-2.9 3.2c-.7.8-.1 2 1 2h32.4c1.1 0 1.7-1.2 1-2l-2.9-3.2c-1.5-1.6-2.3-3.8-2.3-6V28c0-6.6-5.4-12-12-12Z' fill='%23111827'/%3E%3Cpath d='M27 49a5 5 0 0 0 10 0' fill='none' stroke='%23111827' stroke-width='3.5' stroke-linecap='round'/%3E${badge}%3C/svg%3E`
+  let link = document.querySelector("link[rel='icon']") as HTMLLinkElement | null
+  if (!link) {
+    link = document.createElement('link')
+    link.rel = 'icon'
+    document.head.appendChild(link)
+  }
+  link.href = href
+}
+
 function TokenSetupCard() {
   return (
     <div className="card" style={{ padding: 24, maxWidth: 860 }}>
@@ -68,7 +91,9 @@ export function InboxPage() {
   const navigate = useNavigate({ from: inboxRoute.fullPath })
   const queryClient = useQueryClient()
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const lastSeenSignatureRef = useRef('')
   const [stalenessNow, setStalenessNow] = useState(() => Date.now())
+  const [hasUnseenChanges, setHasUnseenChanges] = useState(false)
 
   useEffect(() => {
     if (preferences.show !== show) {
@@ -94,6 +119,7 @@ export function InboxPage() {
   })
 
   const threads = notificationsQuery.data?.threads ?? []
+  const inboxSignature = useMemo(() => threads.map((thread) => `${thread.id}:${thread.updatedAt}:${thread.unread ? 'u' : 'r'}`).join('|'), [threads])
 
   useEffect(() => {
     const visibleIds = new Set(threads.map((thread) => thread.id))
@@ -205,12 +231,15 @@ export function InboxPage() {
 
   useEffect(() => {
     if (!token) return
+    if (isRefreshOverdue(notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds)) {
+      runRefresh()
+    }
+
     const timer = window.setInterval(() => {
-      if (document.hidden) return
       runRefresh()
     }, Math.max(preferences.autoRefreshSeconds, 30) * 1000)
     return () => window.clearInterval(timer)
-  }, [preferences.autoRefreshSeconds, refreshMutation, token])
+  }, [notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds, notificationsQuery.isFetching, refreshMutation.isPending, token])
 
   useEffect(() => {
     if (!selectedThread) return
@@ -218,22 +247,25 @@ export function InboxPage() {
   }, [selectedThread?.id])
 
   useEffect(() => {
-    const refocusSelectedRow = () => {
-      if (document.hidden || !selectedThread) return
-      window.setTimeout(() => rowRefs.current[selectedThread.id]?.focus(), 0)
+    const onVisible = () => {
+      if (document.hidden) return
+      lastSeenSignatureRef.current = inboxSignature
+      setHasUnseenChanges(false)
+      if (selectedThread) {
+        window.setTimeout(() => rowRefs.current[selectedThread.id]?.focus(), 0)
+      }
+      if (token && isRefreshOverdue(notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds)) {
+        runRefresh()
+      }
     }
 
-    const onVisibilityChange = () => {
-      refocusSelectedRow()
-    }
-
-    window.addEventListener('focus', refocusSelectedRow)
-    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
-      window.removeEventListener('focus', refocusSelectedRow)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [selectedThread?.id])
+  }, [inboxSignature, selectedThread?.id, notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds, notificationsQuery.isFetching, refreshMutation.isPending, token])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -276,8 +308,24 @@ export function InboxPage() {
     return <TokenSetupCard />
   }
 
+  useEffect(() => {
+    if (!notificationsQuery.dataUpdatedAt || !inboxSignature) return
+    if (document.hidden) {
+      if (lastSeenSignatureRef.current && lastSeenSignatureRef.current !== inboxSignature) {
+        setHasUnseenChanges(true)
+      }
+      return
+    }
+    lastSeenSignatureRef.current = inboxSignature
+    setHasUnseenChanges(false)
+  }, [inboxSignature, notificationsQuery.dataUpdatedAt])
+
   void stalenessNow
   const staleness = formatStaleness(notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds)
+
+  useEffect(() => {
+    updateFavicon(Boolean(token) && hasUnseenChanges, refreshMutation.isPending || notificationsQuery.isFetching)
+  }, [token, hasUnseenChanges, refreshMutation.isPending, notificationsQuery.isFetching])
 
   return (
     <div className="stack" style={{ gap: 24 }}>
