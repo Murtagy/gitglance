@@ -1,4 +1,4 @@
-import { buildThreadPreview, parsePullRequestApiUrl } from './github'
+import { buildThreadPreview, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl } from './github'
 import type { NotificationThread, PullRequestData } from './types'
 
 describe('parsePullRequestApiUrl', () => {
@@ -12,6 +12,22 @@ describe('parsePullRequestApiUrl', () => {
 
   it('rejects non PR urls', () => {
     expect(parsePullRequestApiUrl('https://github.com/octo/repo/pull/42')).toBeNull()
+  })
+})
+
+describe('notificationSubjectPayloadToWebUrl', () => {
+  it('prefers PR url from check-suite style payloads', () => {
+    expect(notificationSubjectPayloadToWebUrl({
+      html_url: 'https://github.com/octo/repo/actions/runs/123',
+      pull_requests: [{ html_url: 'https://github.com/octo/repo/pull/42' }],
+    })).toBe('https://github.com/octo/repo/pull/42')
+  })
+
+  it('falls back to payload html_url when no PR attached', () => {
+    expect(notificationSubjectPayloadToWebUrl({
+      html_url: 'https://github.com/octo/repo/actions/runs/123',
+      pull_requests: [],
+    })).toBe('https://github.com/octo/repo/actions/runs/123')
   })
 })
 

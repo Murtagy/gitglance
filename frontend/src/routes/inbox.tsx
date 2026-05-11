@@ -4,7 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
 import { GitHubTokenControls } from '../components/github-token-controls'
-import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, markThreadRead, parsePullRequestApiUrl } from '../lib/github'
+import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl } from '../lib/github'
 import { formatDateTime, formatShortDateTime, formatStaleness, truncateText } from '../lib/format'
 import { clearPreviewCaches, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
 import type { InboxShow, NotificationThread, PRFile, PullRequestData, ThreadPreview } from '../lib/types'
@@ -160,7 +160,8 @@ export function InboxPage() {
         if (selectedThread.subjectType === 'PullRequest' && parsed) {
           pr = await fetchPullRequestDetails(token, parsed.owner, parsed.repo, parsed.number)
         }
-        const preview = buildThreadPreview(selectedThread, pr)
+        const resolvedWebUrl = await resolveNotificationWebUrl(token, selectedThread)
+        const preview = buildThreadPreview({ ...selectedThread, webUrl: resolvedWebUrl || selectedThread.webUrl }, pr)
         await savePreviewSnapshot(selectedThread.id, { savedAt: new Date().toISOString(), preview })
         return preview
       } catch (error) {
@@ -287,7 +288,7 @@ export function InboxPage() {
         move(-1)
       } else if ((event.key === 'o' || event.key === 'O') && threads.length) {
         event.preventDefault()
-        const url = selectedThread?.webUrl
+        const url = (previewQuery.data?.thread.id === selectedThread?.id ? previewQuery.data.thread.webUrl : undefined) ?? selectedThread?.webUrl
         if (url) window.open(url, '_blank', 'noopener,noreferrer')
       } else if ((event.key === 'm' || event.key === 'M') && threads.length) {
         event.preventDefault()
@@ -302,7 +303,7 @@ export function InboxPage() {
 
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [markReadMutation, navigate, notificationsQuery.isFetching, refreshMutation, selectedThread, threads])
+  }, [markReadMutation, navigate, notificationsQuery.isFetching, previewQuery.data, refreshMutation, selectedThread, threads])
 
   if (!token) {
     return <TokenSetupCard />
@@ -482,7 +483,7 @@ function PreviewSection({
         </div>
         <div className="controls">
           {thread.unread ? <button className="btn warn" onClick={onMarkRead} disabled={markingRead}>{markingRead ? 'Marking…' : 'Mark read'}</button> : null}
-          {thread.webUrl ? <a className="btn" href={thread.webUrl} target="_blank" rel="noreferrer">Open in GitHub</a> : null}
+          {((preview?.thread.webUrl ?? thread.webUrl) || undefined) ? <a className="btn" href={(preview?.thread.webUrl ?? thread.webUrl) || undefined} target="_blank" rel="noreferrer">Open in GitHub</a> : null}
         </div>
       </div>
 

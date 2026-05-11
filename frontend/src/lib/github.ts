@@ -50,6 +50,39 @@ export function apiUrlToWebUrl(apiUrl: string): string {
   return apiUrl.replace('https://api.github.com/repos/', 'https://github.com/').replace('/pulls/', '/pull/')
 }
 
+export function notificationSubjectPayloadToWebUrl(payload: any): string | null {
+  const directPR = payload?.pull_request?.html_url
+  if (typeof directPR === 'string' && directPR) return directPR
+
+  const pullRequests = [
+    ...(Array.isArray(payload?.pull_requests) ? payload.pull_requests : []),
+    ...(Array.isArray(payload?.check_suite?.pull_requests) ? payload.check_suite.pull_requests : []),
+  ]
+  const firstPR = pullRequests.find((pr: any) => typeof pr?.html_url === 'string' && pr.html_url)
+  if (firstPR?.html_url) return firstPR.html_url
+
+  if (typeof payload?.html_url === 'string' && payload.html_url) return payload.html_url
+  return null
+}
+
+export async function resolveNotificationWebUrl(token: string, thread: Pick<NotificationThread, 'subjectType' | 'subjectUrl' | 'webUrl' | 'repoUrl'>): Promise<string> {
+  if (thread.subjectType === 'PullRequest') {
+    return thread.webUrl ?? thread.repoUrl ?? ''
+  }
+  if (!thread.subjectUrl) {
+    return thread.webUrl ?? thread.repoUrl ?? ''
+  }
+
+  try {
+    const payload = await fetchJSON<any>(thread.subjectUrl, {
+      headers: authHeaders(token),
+    })
+    return notificationSubjectPayloadToWebUrl(payload) ?? thread.webUrl ?? thread.repoUrl ?? ''
+  } catch {
+    return thread.webUrl ?? thread.repoUrl ?? ''
+  }
+}
+
 export function parsePullRequestApiUrl(apiUrl?: string | null): { owner: string; repo: string; number: number } | null {
   if (!apiUrl) return null
   const prefix = 'https://api.github.com/repos/'
