@@ -16,7 +16,6 @@ function RootLayout() {
           <div className="topbar-row">
             <nav>
               <Link className={pathname === '/' ? 'active' : ''} to="/" search={{ show: 'unread', selected: '' }}>Inbox</Link>
-              <span className="deprecated">Events (deprecated)</span>
               <Link className={pathname === '/settings' ? 'active' : ''} to="/settings">Settings</Link>
               {token ? <span className="muted small">Browser-local GitHub token active</span> : <span className="muted small">No token loaded</span>}
             </nav>
