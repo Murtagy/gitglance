@@ -92,6 +92,7 @@ export function InboxPage() {
   const queryClient = useQueryClient()
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({})
   const lastSeenSignatureRef = useRef('')
+  const hiddenBaselineSignatureRef = useRef<string | null>(null)
   const [stalenessNow, setStalenessNow] = useState(() => Date.now())
   const [hasUnseenChanges, setHasUnseenChanges] = useState(false)
 
@@ -248,8 +249,12 @@ export function InboxPage() {
   }, [selectedThread?.id])
 
   useEffect(() => {
-    const onVisible = () => {
-      if (document.hidden) return
+    const onVisibilityOrFocus = () => {
+      if (document.hidden) {
+        hiddenBaselineSignatureRef.current = inboxSignature
+        return
+      }
+      hiddenBaselineSignatureRef.current = null
       lastSeenSignatureRef.current = inboxSignature
       setHasUnseenChanges(false)
       if (selectedThread) {
@@ -260,11 +265,11 @@ export function InboxPage() {
       }
     }
 
-    window.addEventListener('focus', onVisible)
-    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisibilityOrFocus)
+    document.addEventListener('visibilitychange', onVisibilityOrFocus)
     return () => {
-      window.removeEventListener('focus', onVisible)
-      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisibilityOrFocus)
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus)
     }
   }, [inboxSignature, selectedThread?.id, notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds, notificationsQuery.isFetching, refreshMutation.isPending, token])
 
@@ -312,11 +317,13 @@ export function InboxPage() {
   useEffect(() => {
     if (!notificationsQuery.dataUpdatedAt || !inboxSignature) return
     if (document.hidden) {
-      if (lastSeenSignatureRef.current && lastSeenSignatureRef.current !== inboxSignature) {
+      const baseline = hiddenBaselineSignatureRef.current ?? lastSeenSignatureRef.current
+      if (baseline && baseline !== inboxSignature) {
         setHasUnseenChanges(true)
       }
       return
     }
+    hiddenBaselineSignatureRef.current = null
     lastSeenSignatureRef.current = inboxSignature
     setHasUnseenChanges(false)
   }, [inboxSignature, notificationsQuery.dataUpdatedAt])
