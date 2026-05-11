@@ -151,6 +151,11 @@ export function InboxPage() {
     },
   })
 
+  const runRefresh = () => {
+    if (refreshMutation.isPending || notificationsQuery.isFetching) return
+    refreshMutation.mutate()
+  }
+
   const markReadMutation = useMutation({
     mutationFn: async (thread: NotificationThread) => {
       await markThreadRead(token, thread.id)
@@ -201,8 +206,8 @@ export function InboxPage() {
   useEffect(() => {
     if (!token) return
     const timer = window.setInterval(() => {
-      if (document.hidden || refreshMutation.isPending) return
-      refreshMutation.mutate()
+      if (document.hidden) return
+      runRefresh()
     }, Math.max(preferences.autoRefreshSeconds, 30) * 1000)
     return () => window.clearInterval(timer)
   }, [preferences.autoRefreshSeconds, refreshMutation, token])
@@ -235,7 +240,6 @@ export function InboxPage() {
       const tag = (event.target as HTMLElement | null)?.tagName
       if (tag && ['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
       if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (!threads.length) return
       const currentIndex = selectedThread ? threads.findIndex((thread) => thread.id === selectedThread.id) : -1
       const move = (delta: number) => {
         const nextIndex = Math.max(0, Math.min(threads.length - 1, (currentIndex === -1 ? 0 : currentIndex) + delta))
@@ -243,30 +247,30 @@ export function InboxPage() {
         navigate({ search: (prev) => ({ ...prev, selected: next.id }) })
       }
 
-      if (event.key === 'j' || event.key === 'ArrowDown') {
+      if ((event.key === 'j' || event.key === 'ArrowDown') && threads.length) {
         event.preventDefault()
         move(1)
-      } else if (event.key === 'k' || event.key === 'ArrowUp') {
+      } else if ((event.key === 'k' || event.key === 'ArrowUp') && threads.length) {
         event.preventDefault()
         move(-1)
-      } else if (event.key === 'o' || event.key === 'O') {
+      } else if ((event.key === 'o' || event.key === 'O') && threads.length) {
         event.preventDefault()
         const url = selectedThread?.webUrl
         if (url) window.open(url, '_blank', 'noopener,noreferrer')
-      } else if (event.key === 'm' || event.key === 'M') {
+      } else if ((event.key === 'm' || event.key === 'M') && threads.length) {
         event.preventDefault()
         if (selectedThread && selectedThread.unread) {
           markReadMutation.mutate(selectedThread)
         }
-      } else if (event.key === 'r' || event.key === 'R') {
+      } else if (event.key === 'r' || event.key === 'R' || event.code === 'KeyR') {
         event.preventDefault()
-        refreshMutation.mutate()
+        runRefresh()
       }
     }
 
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [markReadMutation, navigate, refreshMutation, selectedThread, threads])
+  }, [markReadMutation, navigate, notificationsQuery.isFetching, refreshMutation, selectedThread, threads])
 
   if (!token) {
     return <TokenSetupCard />
@@ -288,7 +292,7 @@ export function InboxPage() {
           </div>
         </div>
         <div className="controls">
-          <button className="btn success" onClick={() => refreshMutation.mutate()} disabled={refreshMutation.isPending || notificationsQuery.isFetching}>Refresh Inbox</button>
+          <button className="btn success" onClick={runRefresh} disabled={refreshMutation.isPending || notificationsQuery.isFetching}>Refresh Inbox</button>
           <button className="btn secondary" onClick={clearToken}>Clear local token</button>
         </div>
       </div>
