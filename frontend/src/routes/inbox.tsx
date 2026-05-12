@@ -597,7 +597,7 @@ function PreviewSection({
                 <div style={{ fontWeight: 700 }}>PR summary</div>
               </div>
               <div className="summary-box-body">
-                {pr.body.trim() ? <div className="muted" style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5 }}>{truncateText(pr.body.replace(/\s+/g, ' ').trim(), 256)}</div> : null}
+                {pr.body.trim() ? <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5, color: '#4b5563' }}>{truncateText(pr.body.replace(/\s+/g, ' ').trim(), 256)}</div> : null}
                 <div className="summary-line"><span className="muted">Files changed</span><span>{pr.changedFiles}</span></div>
                 <div className="summary-line"><span className="muted">Lines</span><span><span style={{ color: '#166534', fontWeight: 700 }}>+{pr.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{pr.deletions}</span></span></div>
                 <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
