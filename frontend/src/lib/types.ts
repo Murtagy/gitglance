@@ -35,6 +35,7 @@ export type PullRequestData = {
   id: string
   number: number
   title: string
+  body: string
   url: string
   state: string
   merged: boolean

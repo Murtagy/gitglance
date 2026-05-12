@@ -49,6 +49,7 @@ describe('buildThreadPreview', () => {
     id: 'pr1',
     number: 42,
     title: 'Test PR',
+    body: 'This is a test PR body',
     url: 'https://github.com/octo/repo/pull/42',
     state: 'OPEN',
     merged: false,

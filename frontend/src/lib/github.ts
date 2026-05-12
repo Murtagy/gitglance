@@ -158,6 +158,7 @@ export async function fetchPullRequestDetails(token: string, owner: string, repo
           id
           number
           title
+          body
           url
           state
           merged
