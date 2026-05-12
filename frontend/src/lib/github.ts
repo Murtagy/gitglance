@@ -302,6 +302,22 @@ async function fetchGraphQL<T>(token: string, query: string, variables?: Record<
   return response.data
 }
 
+export async function submitPullRequestReview(token: string, pullRequestId: string, event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES', body?: string): Promise<void> {
+  const mutation = `
+    mutation($pullRequestId: ID!, $event: PullRequestReviewEvent!, $body: String) {
+      addPullRequestReview(input: { pullRequestId: $pullRequestId, event: $event, body: $body }) {
+        pullRequestReview { id }
+      }
+    }
+  `
+
+  await fetchGraphQL(token, mutation, {
+    pullRequestId,
+    event,
+    body: body?.trim() || null,
+  })
+}
+
 export function buildThreadPreview(thread: NotificationThread, pr?: PullRequestData): ThreadPreview {
   const preview: ThreadPreview = {
     thread,

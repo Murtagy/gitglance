@@ -104,6 +104,7 @@ th { position: sticky; top: 0; background: #f9fafb; font-size: 11px; text-transf
 .summary-box-header { padding: 12px 16px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; }
 .summary-box-body { padding: 16px; }
 .summary-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.review-actions { margin: 12px 0; padding: 12px; border: 1px solid #e5e7eb; border-radius: 12px; background: #fafafa; }
 .file-list { display: flex; flex-direction: column; gap: 8px; max-height: 14rem; overflow: auto; }
 .file-item { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid #f3f4f6; border-radius: 10px; }
 .patch-list { display: flex; flex-direction: column; gap: 12px; max-height: 28rem; overflow: auto; }
