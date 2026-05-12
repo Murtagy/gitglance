@@ -4,7 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
 import { GitHubTokenControls } from '../components/github-token-controls'
-import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl } from '../lib/github'
+import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, submitPullRequestReview } from '../lib/github'
 import { formatDateTime, formatShortDateTime, formatStaleness, truncateText } from '../lib/format'
 import { clearPreviewCaches, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
 import type { InboxShow, NotificationThread, PRFile, PullRequestData, ThreadPreview } from '../lib/types'
@@ -448,8 +448,12 @@ function PreviewSection({
   markingRead: boolean
 }) {
   const { token, preferences } = useAppContext()
+  const queryClient = useQueryClient()
   const pr = preview?.pullRequest
   const [filesMode, setFilesMode] = useState<'files' | 'lines'>('files')
+  const [reviewMode, setReviewMode] = useState<'approve' | 'comment' | 'request_changes' | null>(null)
+  const [reviewBody, setReviewBody] = useState('')
+  const [reviewError, setReviewError] = useState('')
   const parsed = useMemo(() => parsePullRequestApiUrl(thread.subjectUrl), [thread.subjectUrl])
   const defaultFilesMode = useMemo<'files' | 'lines'>(() => {
     if (!pr) return 'files'
@@ -474,9 +478,46 @@ function PreviewSection({
     }))
   }, [patchesQuery.data, pr])
 
+  const reviewMutation = useMutation({
+    mutationFn: async ({ event, body }: { event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'; body: string }) => {
+      if (!pr) throw new Error('No pull request loaded')
+      await submitPullRequestReview(token, pr.id, event, body)
+      await clearPreviewCaches()
+    },
+    onSuccess: async () => {
+      setReviewError('')
+      setReviewBody('')
+      setReviewMode(null)
+      await queryClient.invalidateQueries({ queryKey: ['preview', token, thread.id] })
+      await queryClient.invalidateQueries({ queryKey: ['notifications', token] })
+    },
+    onError: (mutationError) => {
+      setReviewError(mutationError instanceof Error ? mutationError.message : 'Failed to submit review')
+    },
+  })
+
   useEffect(() => {
     setFilesMode(defaultFilesMode)
   }, [defaultFilesMode, thread.id])
+
+  useEffect(() => {
+    setReviewMode(null)
+    setReviewBody('')
+    setReviewError('')
+  }, [thread.id])
+
+  const submitReview = (mode: 'approve' | 'comment' | 'request_changes') => {
+    const normalizedBody = reviewBody.trim()
+    if ((mode === 'comment' || mode === 'request_changes') && !normalizedBody) {
+      setReviewError(mode === 'comment' ? 'Comment body required.' : 'Request changes body required.')
+      return
+    }
+    setReviewError('')
+    reviewMutation.mutate({
+      event: mode === 'approve' ? 'APPROVE' : mode === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES',
+      body: normalizedBody,
+    })
+  }
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -556,11 +597,42 @@ function PreviewSection({
                 <div style={{ fontWeight: 700 }}>PR summary</div>
               </div>
               <div className="summary-box-body">
-                {pr.body.trim() ? <div className="muted small" style={{ marginBottom: 12 }}>{truncateText(pr.body.replace(/\s+/g, ' ').trim(), 140)}</div> : null}
+                {pr.body.trim() ? <div className="muted" style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5 }}>{truncateText(pr.body.replace(/\s+/g, ' ').trim(), 256)}</div> : null}
                 <div className="summary-line"><span className="muted">Files changed</span><span>{pr.changedFiles}</span></div>
                 <div className="summary-line"><span className="muted">Lines</span><span><span style={{ color: '#166534', fontWeight: 700 }}>+{pr.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{pr.deletions}</span></span></div>
                 <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
                 <div className="summary-line"><span className="muted">Review decision</span>{reviewDecisionBadge(pr.reviewDecision)}</div>
+                {pr.state.toUpperCase() === 'OPEN' && !pr.merged ? (
+                  <div className="review-actions">
+                    <div className="controls">
+                      <button type="button" className={`btn ${reviewMode === 'approve' ? '' : 'secondary'}`} onClick={() => setReviewMode('approve')}>Approve</button>
+                      <button type="button" className={`btn ${reviewMode === 'comment' ? '' : 'secondary'}`} onClick={() => setReviewMode('comment')}>Comment</button>
+                      <button type="button" className={`btn ${reviewMode === 'request_changes' ? 'warn' : 'secondary'}`} onClick={() => setReviewMode('request_changes')}>Request changes</button>
+                    </div>
+                    {reviewMode ? (
+                      <div className="stack" style={{ marginTop: 10 }}>
+                        <textarea
+                          className="form-control"
+                          value={reviewBody}
+                          onChange={(event) => setReviewBody(event.target.value)}
+                          placeholder={reviewMode === 'approve' ? 'Optional approval note' : reviewMode === 'comment' ? 'Required review comment' : 'Required change request'}
+                        />
+                        <div className="controls">
+                          <button
+                            type="button"
+                            className={`btn ${reviewMode === 'request_changes' ? 'warn' : reviewMode === 'approve' ? 'success' : ''}`}
+                            onClick={() => submitReview(reviewMode)}
+                            disabled={reviewMutation.isPending}
+                          >
+                            {reviewMutation.isPending ? 'Submitting…' : reviewMode === 'approve' ? 'Submit approval' : reviewMode === 'comment' ? 'Submit comment' : 'Submit change request'}
+                          </button>
+                          <button type="button" className="btn secondary" onClick={() => { setReviewMode(null); setReviewBody(''); setReviewError('') }} disabled={reviewMutation.isPending}>Cancel</button>
+                        </div>
+                        {reviewError ? <div className="error">{reviewError}</div> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="stack" style={{ marginTop: 12 }}>
                   <div className="space-between" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
                     <div className="small muted" style={{ fontWeight: 700 }}>Files modified</div>
