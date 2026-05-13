@@ -55,6 +55,7 @@ describe('buildThreadPreview', () => {
     merged: false,
     createdAt: '2026-05-07T08:00:00Z',
     repository: { nameWithOwner: 'octo/repo' },
+    author: { login: 'octocat' },
     commits: {
       totalCount: 1,
       nodes: [{ commit: { oid: 'abc123456789', message: 'commit title\nbody', authoredDate: '2026-05-07T09:30:00Z' } }],

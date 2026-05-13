@@ -164,6 +164,7 @@ export async function fetchPullRequestDetails(token: string, owner: string, repo
           merged
           createdAt
           repository { nameWithOwner }
+          author { login }
           commits(last: 20) {
             totalCount
             nodes { commit { oid message authoredDate } }

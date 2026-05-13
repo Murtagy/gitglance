@@ -43,6 +43,9 @@ export type PullRequestData = {
   repository: {
     nameWithOwner: string
   }
+  author?: {
+    login?: string | null
+  } | null
   commits: {
     totalCount: number
     nodes: Array<{

@@ -47,6 +47,24 @@ function reviewStateBadge(value?: string | null) {
   return <span className="badge gray">{value}</span>
 }
 
+function latestReviewAuthors(pr: PullRequestData, state: 'APPROVED' | 'CHANGES_REQUESTED'): string[] {
+  const latestByAuthor = new Map<string, { state: string; createdAt: string }>()
+
+  for (const review of pr.reviews.nodes) {
+    const login = review.author?.login?.trim()
+    if (!login) continue
+    const existing = latestByAuthor.get(login)
+    if (!existing || new Date(review.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+      latestByAuthor.set(login, { state: review.state, createdAt: review.createdAt })
+    }
+  }
+
+  return [...latestByAuthor.entries()]
+    .filter(([, review]) => review.state === state)
+    .map(([login]) => login)
+    .sort((a, b) => a.localeCompare(b))
+}
+
 function patchLineClass(line: string) {
   if (line.startsWith('@@')) return 'patch-line patch-line-hunk'
   if (line.startsWith('+')) return 'patch-line patch-line-add'
@@ -478,6 +496,9 @@ function PreviewSection({
     }))
   }, [patchesQuery.data, pr])
 
+  const approvedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'APPROVED') : [], [pr])
+  const changesRequestedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'CHANGES_REQUESTED') : [], [pr])
+
   const reviewMutation = useMutation({
     mutationFn: async ({ event, body }: { event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'; body: string }) => {
       if (!pr) throw new Error('No pull request loaded')
@@ -598,10 +619,16 @@ function PreviewSection({
               </div>
               <div className="summary-box-body">
                 {pr.body.trim() ? <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5, color: '#4b5563' }}>{truncateText(pr.body.replace(/\s+/g, ' ').trim(), 256)}</div> : null}
+                <div className="summary-line"><span className="muted">Author</span><span>{pr.author?.login || '—'}</span></div>
                 <div className="summary-line"><span className="muted">Files changed</span><span>{pr.changedFiles}</span></div>
                 <div className="summary-line"><span className="muted">Lines</span><span><span style={{ color: '#166534', fontWeight: 700 }}>+{pr.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{pr.deletions}</span></span></div>
                 <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
-                <div className="summary-line"><span className="muted">Review decision</span>{reviewDecisionBadge(pr.reviewDecision)}</div>
+                <div className="summary-line">
+                  <span className="muted">Review decision</span>
+                  {reviewDecisionBadge(pr.reviewDecision)}
+                  {pr.reviewDecision === 'APPROVED' && approvedBy.length ? <span className="muted small">by {approvedBy.join(', ')}</span> : null}
+                  {pr.reviewDecision === 'CHANGES_REQUESTED' && changesRequestedBy.length ? <span className="muted small">by {changesRequestedBy.join(', ')}</span> : null}
+                </div>
                 {pr.state.toUpperCase() === 'OPEN' && !pr.merged ? (
                   <div className="review-actions">
                     <div className="controls">
