@@ -24,7 +24,10 @@ function RootLayout() {
               <a href={commitUrl} target="_blank" rel="noreferrer"><code>{__APP_COMMIT__}</code></a>
               <span>Updated:</span>
               <span>{__APP_BUILD_TIME__}</span>
-              <a className="btn secondary" href="https://ko-fi.com/A0A6DPF5O" target="_blank" rel="noreferrer">Thank you</a>
+              <a className="btn secondary" href="https://ko-fi.com/A0A6DPF5O" target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <img src="https://storage.ko-fi.com/cdn/logomarkLogo.png" alt="Ko-fi" style={{ width: 16, height: 16, display: 'block' }} />
+                <span>Thank you</span>
+              </a>
             </div>
           </div>
         </div>
