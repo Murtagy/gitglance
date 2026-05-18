@@ -26,15 +26,16 @@ function normalizeUrl(value?: string) {
 }
 
 function contentSecurityPolicy(proxyUrls: string[]) {
-  const connectSrc = ["'self'", 'https://api.github.com', ...new Set(proxyUrls.filter(Boolean))]
+  const connectSrc = ["'self'", 'https://api.github.com', 'https://storage.ko-fi.com', 'https://ko-fi.com', ...new Set(proxyUrls.filter(Boolean))]
 
   return [
     "default-src 'self'",
     `connect-src ${connectSrc.join(' ')}`,
     "img-src 'self' data: https:",
     "style-src 'self' 'unsafe-inline'",
-    "script-src 'self'",
+    "script-src 'self' https://storage.ko-fi.com",
     "font-src 'self'",
+    "frame-src https://ko-fi.com https://storage.ko-fi.com",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'",
