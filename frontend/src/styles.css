@@ -3,8 +3,8 @@
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   line-height: 1.4;
   font-weight: 400;
-  color: #111827;
-  background: #fcfaec;
+  color: #24292f;
+  background: #f6f8fa;
 }
 
 * { box-sizing: border-box; }
@@ -15,17 +15,17 @@ button { cursor: pointer; }
 
 .app-shell { min-height: 100vh; }
 .topbar {
-  background: #fde68a;
+  background: #ffffff;
   padding: 16px 24px;
-  border-bottom: 1px solid rgba(0,0,0,.08);
+  border-bottom: 1px solid #d0d7de;
 }
 .topbar-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }
 .topbar nav { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-.topbar a { text-decoration: none; color: #111827; }
+.topbar a { text-decoration: none; color: #24292f; }
 .topbar a.active { font-weight: 700; }
 .topbar a.deprecated { color: #6b7280; }
-.build-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: #4b5563; }
-.build-meta code { background: rgba(255,255,255,.7); padding: 2px 6px; border-radius: 999px; }
+.build-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: #57606a; }
+.build-meta code { background: #f6f8fa; padding: 2px 6px; border-radius: 999px; border: 1px solid #d0d7de; }
 .container { max-width: 1380px; margin: 0 auto; padding: 24px; }
 .card {
   background: white;
