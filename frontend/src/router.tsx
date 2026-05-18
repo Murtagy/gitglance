@@ -1,69 +1,8 @@
-import { useEffect, useRef } from 'react'
 import { Link, Outlet, createRootRoute, createRoute, createRouter, createHashHistory, useRouterState } from '@tanstack/react-router'
 import { QueryClient } from '@tanstack/react-query'
 import { useAppContext } from './lib/app-context'
 import { InboxPage } from './routes/inbox'
 import { SettingsPage } from './routes/settings'
-
-declare global {
-  interface Window {
-    kofiwidget2?: {
-      init: (label: string, color: string, id: string) => void
-      draw: () => void
-    }
-  }
-}
-
-function KoFiWidget() {
-  const containerRef = useRef<HTMLSpanElement | null>(null)
-
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-
-    let cancelled = false
-
-    const draw = () => {
-      if (cancelled || !window.kofiwidget2 || !container) return
-      container.innerHTML = ''
-      const host = document.createElement('span')
-      container.appendChild(host)
-      const previousBodyPosition = document.body.style.position
-      try {
-        document.body.style.position = 'relative'
-        window.kofiwidget2.init('Thank you', '#313b4d', 'A0A6DPF5O')
-        window.kofiwidget2.draw()
-      } finally {
-        document.body.style.position = previousBodyPosition
-      }
-      const floatingWidget = document.getElementById('kofi-widget-overlay')
-      if (floatingWidget && host.parentElement === container) {
-        host.appendChild(floatingWidget)
-      }
-    }
-
-    if (window.kofiwidget2) {
-      draw()
-      return () => {
-        cancelled = true
-        container.innerHTML = ''
-      }
-    }
-
-    const script = document.createElement('script')
-    script.src = 'https://storage.ko-fi.com/cdn/widget/Widget_2.js'
-    script.async = true
-    script.onload = () => draw()
-    container.appendChild(script)
-
-    return () => {
-      cancelled = true
-      container.innerHTML = ''
-    }
-  }, [])
-
-  return <span ref={containerRef} />
-}
 
 function RootLayout() {
   const { token } = useAppContext()
@@ -85,7 +24,7 @@ function RootLayout() {
               <a href={commitUrl} target="_blank" rel="noreferrer"><code>{__APP_COMMIT__}</code></a>
               <span>Updated:</span>
               <span>{__APP_BUILD_TIME__}</span>
-              <KoFiWidget />
+              <a className="btn secondary" href="https://ko-fi.com/A0A6DPF5O" target="_blank" rel="noreferrer">Thank you</a>
             </div>
           </div>
         </div>
