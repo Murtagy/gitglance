@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "GitHub Notifications Redirect",
+  "version": "0.1.0",
+  "description": "Redirect GitHub notifications links to GitGlance.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://github.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

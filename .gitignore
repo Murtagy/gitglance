@@ -13,3 +13,5 @@ frontend/*.tsbuildinfo
 proxy/.dev.vars
 proxy/.dev.vars.*
 !proxy/.dev.vars.example
+chrome-extension.crx
+chrome-extension.pem
