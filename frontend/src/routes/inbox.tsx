@@ -25,6 +25,7 @@ function activityBadge(value: string) {
 function stateBadge(pr?: PullRequestData) {
   if (!pr) return <span className="badge gray">Unknown</span>
   if (pr.merged) return <span className="badge purple">MERGED</span>
+  if (pr.isDraft) return <span className="badge gray">DRAFT</span>
   if (pr.state.toUpperCase() === 'OPEN') return <span className="badge green">OPEN</span>
   if (pr.state.toUpperCase() === 'CLOSED') return <span className="badge red">CLOSED</span>
   return <span className="badge gray">{pr.state}</span>
@@ -625,11 +626,11 @@ function PreviewSection({
                 <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
                 <div className="summary-line">
                   <span className="muted">Review decision</span>
-                  {reviewDecisionBadge(pr.reviewDecision)}
-                  {pr.reviewDecision === 'APPROVED' && approvedBy.length ? <span className="muted small">by {approvedBy.join(', ')}</span> : null}
-                  {pr.reviewDecision === 'CHANGES_REQUESTED' && changesRequestedBy.length ? <span className="muted small">by {changesRequestedBy.join(', ')}</span> : null}
+                  {pr.isDraft ? <span className="badge gray">Not ready for review</span> : reviewDecisionBadge(pr.reviewDecision)}
+                  {!pr.isDraft && pr.reviewDecision === 'APPROVED' && approvedBy.length ? <span className="muted small">by {approvedBy.join(', ')}</span> : null}
+                  {!pr.isDraft && pr.reviewDecision === 'CHANGES_REQUESTED' && changesRequestedBy.length ? <span className="muted small">by {changesRequestedBy.join(', ')}</span> : null}
                 </div>
-                {pr.state.toUpperCase() === 'OPEN' && !pr.merged ? (
+                {pr.state.toUpperCase() === 'OPEN' && !pr.merged && !pr.isDraft ? (
                   <div className="review-actions">
                     <div className="controls">
                       <button type="button" className={`btn ${reviewMode === 'approve' ? '' : 'secondary'}`} onClick={() => setReviewMode('approve')}>Approve</button>

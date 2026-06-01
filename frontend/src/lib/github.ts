@@ -161,6 +161,7 @@ export async function fetchPullRequestDetails(token: string, owner: string, repo
           body
           url
           state
+          isDraft
           merged
           createdAt
           repository { nameWithOwner }

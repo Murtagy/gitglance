@@ -52,6 +52,7 @@ describe('buildThreadPreview', () => {
     body: 'This is a test PR body',
     url: 'https://github.com/octo/repo/pull/42',
     state: 'OPEN',
+    isDraft: false,
     merged: false,
     createdAt: '2026-05-07T08:00:00Z',
     repository: { nameWithOwner: 'octo/repo' },

@@ -38,6 +38,7 @@ export type PullRequestData = {
   body: string
   url: string
   state: string
+  isDraft: boolean
   merged: boolean
   createdAt: string
   repository: {
