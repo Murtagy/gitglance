@@ -4,7 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
 import { GitHubTokenControls } from '../components/github-token-controls'
-import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, submitPullRequestReview } from '../lib/github'
+import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, fetchViewer, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, submitPullRequestReview } from '../lib/github'
 import { formatDateTime, formatShortDateTime, formatStaleness, truncateText } from '../lib/format'
 import { clearPreviewCaches, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
 import type { InboxShow, NotificationThread, PRFile, PullRequestData, ThreadPreview } from '../lib/types'
@@ -47,6 +47,20 @@ function prStateIconLabel(pr?: PullRequestData) {
   if (pr.state.toUpperCase() === 'OPEN') return 'Open pull request'
   if (pr.state.toUpperCase() === 'CLOSED') return 'Closed pull request'
   return `${pr.state} pull request`
+}
+
+function formatBadgeText(value: string) {
+  const normalized = value
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .toLowerCase()
+  return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : value
+}
+
+function formatSubjectType(value: string) {
+  if (value === 'PullRequest') return 'Pull Request'
+  return formatBadgeText(value)
 }
 
 function reviewDecisionBadge(value?: string | null) {
@@ -161,6 +175,13 @@ export function InboxPage() {
       setShow(show)
     }
   }, [preferences.show, setShow, show])
+
+  const viewerQuery = useQuery({
+    queryKey: ['viewer', token],
+    enabled: Boolean(token),
+    staleTime: 10 * 60_000,
+    queryFn: () => fetchViewer(token),
+  })
 
   const notificationsQuery = useQuery({
     queryKey: ['notifications', token, show],
@@ -430,6 +451,8 @@ export function InboxPage() {
           {!notificationsQuery.isLoading && !threads.length ? <div className="card empty">No inbox threads found.</div> : null}
           {threads.map((thread) => {
             const prefetchedPreview = previewByThreadId.get(thread.id)
+            const viewerLogin = viewerQuery.data?.login
+            const approvedByViewer = Boolean(viewerLogin && prefetchedPreview?.pullRequest && latestReviewAuthors(prefetchedPreview.pullRequest, 'APPROVED').includes(viewerLogin))
             return (
             <button
               key={thread.id}
@@ -449,8 +472,9 @@ export function InboxPage() {
                     {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(prefetchedPreview?.pullRequest)} title={prStateIconLabel(prefetchedPreview?.pullRequest)} aria-label={prStateIconLabel(prefetchedPreview?.pullRequest)} /> : null}
                     <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
                     <span className={`badge ${thread.unread ? 'blue' : 'gray'}`}>{thread.unread ? 'Unread' : 'Read'}</span>
-                    <span className="badge amber">{thread.reason}</span>
-                    <span className="badge gray">{thread.subjectType}</span>
+                    <span className="badge amber">{formatBadgeText(thread.reason)}</span>
+                    {approvedByViewer ? <span className="badge green">Approved</span> : null}
+                    <span className="badge gray">{formatSubjectType(thread.subjectType)}</span>
                   </div>
                   <div className="inbox-item-title">{thread.subjectTitle}</div>
                   <div className="muted small">Updated {formatDateTime(thread.updatedAt)}</div>
