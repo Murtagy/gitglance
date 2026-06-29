@@ -104,6 +104,7 @@ export async function fetchNotifications(token: string, show: 'unread' | 'all'):
   const url = new URL(`${GITHUB_API_URL}/notifications`)
   url.searchParams.set('all', show === 'all' ? 'true' : 'false')
   url.searchParams.set('participating', 'false')
+  url.searchParams.set('per_page', '20')
   const data = await fetchJSON<any[]>(url, {
     headers: authHeaders(token),
   })

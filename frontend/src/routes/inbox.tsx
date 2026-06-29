@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
@@ -29,6 +29,24 @@ function stateBadge(pr?: PullRequestData) {
   if (pr.state.toUpperCase() === 'OPEN') return <span className="badge green">OPEN</span>
   if (pr.state.toUpperCase() === 'CLOSED') return <span className="badge red">CLOSED</span>
   return <span className="badge gray">{pr.state}</span>
+}
+
+function prStateIconClass(pr?: PullRequestData) {
+  if (!pr) return 'pr-state-icon gray'
+  if (pr.merged) return 'pr-state-icon purple'
+  if (pr.isDraft) return 'pr-state-icon gray'
+  if (pr.state.toUpperCase() === 'OPEN') return 'pr-state-icon green'
+  if (pr.state.toUpperCase() === 'CLOSED') return 'pr-state-icon red'
+  return 'pr-state-icon gray'
+}
+
+function prStateIconLabel(pr?: PullRequestData) {
+  if (!pr) return 'PR state unknown'
+  if (pr.merged) return 'Merged pull request'
+  if (pr.isDraft) return 'Draft pull request'
+  if (pr.state.toUpperCase() === 'OPEN') return 'Open pull request'
+  if (pr.state.toUpperCase() === 'CLOSED') return 'Closed pull request'
+  return `${pr.state} pull request`
 }
 
 function reviewDecisionBadge(value?: string | null) {
@@ -87,6 +105,29 @@ function updateFavicon(hasUnseenChanges: boolean, syncing: boolean) {
     document.head.appendChild(link)
   }
   link.href = href
+}
+
+async function loadThreadPreview(token: string, thread: NotificationThread): Promise<ThreadPreview> {
+  const cached = await loadPreviewSnapshot(thread.id)
+  const cachedMatches = cached && cached.preview.thread.updatedAt === thread.updatedAt && (cached.preview.thread.lastReadAt ?? null) === (thread.lastReadAt ?? null)
+  if (cached && cachedMatches && (Date.now() - new Date(cached.savedAt).getTime()) <= PREVIEW_CACHE_TTL_MS) {
+    return cached.preview
+  }
+
+  try {
+    const parsed = parsePullRequestApiUrl(thread.subjectUrl)
+    let pr: PullRequestData | undefined
+    if (thread.subjectType === 'PullRequest' && parsed) {
+      pr = await fetchPullRequestDetails(token, parsed.owner, parsed.repo, parsed.number)
+    }
+    const resolvedWebUrl = await resolveNotificationWebUrl(token, thread)
+    const preview = buildThreadPreview({ ...thread, webUrl: resolvedWebUrl || thread.webUrl }, pr)
+    await savePreviewSnapshot(thread.id, { savedAt: new Date().toISOString(), preview })
+    return preview
+  } catch (error) {
+    if (cached && cachedMatches) return cached.preview
+    throw error
+  }
 }
 
 function TokenSetupCard() {
@@ -162,32 +203,30 @@ export function InboxPage() {
 
   const selectedThread = useMemo(() => threads.find((thread) => thread.id === selected) ?? threads[0], [selected, threads])
 
+  const pagePreviewQueries = useQueries({
+    queries: threads.map((thread) => ({
+      queryKey: ['preview', token, thread.id],
+      enabled: Boolean(token),
+      queryFn: () => loadThreadPreview(token, thread),
+      staleTime: PREVIEW_CACHE_TTL_MS,
+    })),
+  })
+
+  const previewByThreadId = useMemo(() => {
+    const entries: Array<[string, ThreadPreview]> = []
+    for (let index = 0; index < threads.length; index += 1) {
+      const preview = pagePreviewQueries[index]?.data
+      if (preview) entries.push([threads[index].id, preview])
+    }
+    return new Map(entries)
+  }, [pagePreviewQueries, threads])
+
   const previewQuery = useQuery({
     queryKey: ['preview', token, selectedThread?.id],
     enabled: Boolean(token && selectedThread),
     queryFn: async () => {
       if (!selectedThread) throw new Error('Missing selected thread')
-
-      const cached = await loadPreviewSnapshot(selectedThread.id)
-      const cachedMatches = cached && cached.preview.thread.updatedAt === selectedThread.updatedAt && (cached.preview.thread.lastReadAt ?? null) === (selectedThread.lastReadAt ?? null)
-      if (cached && cachedMatches && (Date.now() - new Date(cached.savedAt).getTime()) <= PREVIEW_CACHE_TTL_MS) {
-        return cached.preview
-      }
-
-      try {
-        const parsed = parsePullRequestApiUrl(selectedThread.subjectUrl)
-        let pr: PullRequestData | undefined
-        if (selectedThread.subjectType === 'PullRequest' && parsed) {
-          pr = await fetchPullRequestDetails(token, parsed.owner, parsed.repo, parsed.number)
-        }
-        const resolvedWebUrl = await resolveNotificationWebUrl(token, selectedThread)
-        const preview = buildThreadPreview({ ...selectedThread, webUrl: resolvedWebUrl || selectedThread.webUrl }, pr)
-        await savePreviewSnapshot(selectedThread.id, { savedAt: new Date().toISOString(), preview })
-        return preview
-      } catch (error) {
-        if (cached && cachedMatches) return cached.preview
-        throw error
-      }
+      return loadThreadPreview(token, selectedThread)
     },
   })
 
@@ -389,7 +428,9 @@ export function InboxPage() {
         <div className="inbox-list">
           {notificationsQuery.isLoading ? <div className="card empty loading">Loading inbox…</div> : null}
           {!notificationsQuery.isLoading && !threads.length ? <div className="card empty">No inbox threads found.</div> : null}
-          {threads.map((thread) => (
+          {threads.map((thread) => {
+            const prefetchedPreview = previewByThreadId.get(thread.id)
+            return (
             <button
               key={thread.id}
               type="button"
@@ -405,6 +446,7 @@ export function InboxPage() {
               <div className="space-between" style={{ alignItems: 'flex-start' }}>
                 <div className="stack" style={{ gap: 6, textAlign: 'left' }}>
                   <div className="split">
+                    {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(prefetchedPreview?.pullRequest)} title={prStateIconLabel(prefetchedPreview?.pullRequest)} aria-label={prStateIconLabel(prefetchedPreview?.pullRequest)} /> : null}
                     <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
                     <span className={`badge ${thread.unread ? 'blue' : 'gray'}`}>{thread.unread ? 'Unread' : 'Read'}</span>
                     <span className="badge amber">{thread.reason}</span>
@@ -430,7 +472,8 @@ export function InboxPage() {
                 ) : null}
               </div>
             </button>
-          ))}
+            )
+          })}
         </div>
 
         <div className="card preview-pane">
