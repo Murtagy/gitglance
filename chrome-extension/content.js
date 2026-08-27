@@ -1,5 +1,6 @@
-const TARGET_URL = "https://murtagy.github.io/gitglance/";
+const TARGET_URL = "https://murtagy.github.io/gitglance/#/?show=unread&selected=";
 const GITHUB_NOTIFICATIONS_PATH = "/notifications";
+const OPEN_MESSAGE = "open-gitglance";
 
 function isNotificationsUrl(value) {
   if (!value) return false;
@@ -30,21 +31,42 @@ function rewriteAllAnchors(root = document) {
   anchors.forEach(rewriteAnchor);
 }
 
-document.addEventListener(
-  "click",
-  (event) => {
-    const anchor = event.target instanceof Element
-      ? event.target.closest("a[href]")
-      : null;
+function isRedirectAnchor(anchor) {
+  return (
+    anchor instanceof HTMLAnchorElement &&
+    (anchor.dataset.gitglanceRedirect === "true" ||
+      isNotificationsUrl(anchor.getAttribute("href")))
+  );
+}
 
-    if (!anchor || !isNotificationsUrl(anchor.getAttribute("href"))) return;
-
-    anchor.href = TARGET_URL;
-    event.preventDefault();
+function requestGitGlanceTab() {
+  try {
+    chrome.runtime.sendMessage({ type: OPEN_MESSAGE }, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error || !response?.ok) window.location.assign(TARGET_URL);
+    });
+  } catch {
     window.location.assign(TARGET_URL);
-  },
-  true
-);
+  }
+}
+
+function handleNotificationClick(event) {
+  if (event.type === "auxclick" && event.button !== 1) return;
+
+  const anchor = event.target instanceof Element
+    ? event.target.closest("a[href]")
+    : null;
+
+  if (!isRedirectAnchor(anchor)) return;
+
+  rewriteAnchor(anchor);
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  requestGitGlanceTab();
+}
+
+document.addEventListener("click", handleNotificationClick, true);
+document.addEventListener("auxclick", handleNotificationClick, true);
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => rewriteAllAnchors());

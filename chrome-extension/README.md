@@ -1,6 +1,6 @@
 # GitHub Notifications Redirect Chrome extension
 
-Redirects GitHub notifications links from `https://github.com/notifications` to `https://murtagy.github.io/gitglance/`.
+Opens GitHub notifications links in one global, pinned GitGlance tab.
 
 ## Load in Chrome
 
@@ -12,5 +12,10 @@ Redirects GitHub notifications links from `https://github.com/notifications` to 
 ## Behavior
 
 - Rewrites GitHub links pointing at `/notifications`
-- Intercepts clicks before GitHub handles them
+- Intercepts regular, keyboard, modifier, and middle-click activation
+- Creates and pins one GitGlance tab, then focuses and reuses it globally
+- Keeps the originating GitHub tab open
+- Closes duplicate GitGlance tabs created through native **Open link in new tab**
 - Handles dynamically rendered GitHub UI via `MutationObserver`
+
+After updating the unpacked extension, click **Reload** on `chrome://extensions` and refresh existing GitHub tabs.

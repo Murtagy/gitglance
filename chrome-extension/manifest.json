@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
   "name": "GitHub Notifications Redirect",
-  "version": "0.1.0",
-  "description": "Redirect GitHub notifications links to GitGlance.",
+  "version": "0.2.0",
+  "description": "Open GitHub notifications in one pinned GitGlance tab.",
+  "permissions": [
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
