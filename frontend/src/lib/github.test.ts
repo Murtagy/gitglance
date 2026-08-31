@@ -1,4 +1,4 @@
-import { buildThreadPreview, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl } from './github'
+import { buildThreadPreview, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, sortNotificationThreadsOldestFirst } from './github'
 import type { NotificationThread, PullRequestData } from './types'
 
 describe('parsePullRequestApiUrl', () => {
@@ -28,6 +28,19 @@ describe('notificationSubjectPayloadToWebUrl', () => {
       html_url: 'https://github.com/octo/repo/actions/runs/123',
       pull_requests: [],
     })).toBe('https://github.com/octo/repo/actions/runs/123')
+  })
+})
+
+describe('sortNotificationThreadsOldestFirst', () => {
+  it('orders oldest updates first without mutating input', () => {
+    const threads: NotificationThread[] = [
+      { id: 'newest', updatedAt: '2026-05-07T12:00:00Z', unread: true, reason: 'mention', repoFullName: 'octo/repo', subjectType: 'Issue', subjectTitle: 'Newest' },
+      { id: 'oldest', updatedAt: '2026-05-07T10:00:00Z', unread: true, reason: 'mention', repoFullName: 'octo/repo', subjectType: 'Issue', subjectTitle: 'Oldest' },
+      { id: 'middle', updatedAt: '2026-05-07T11:00:00Z', unread: true, reason: 'mention', repoFullName: 'octo/repo', subjectType: 'Issue', subjectTitle: 'Middle' },
+    ]
+
+    expect(sortNotificationThreadsOldestFirst(threads).map((thread) => thread.id)).toEqual(['oldest', 'middle', 'newest'])
+    expect(threads.map((thread) => thread.id)).toEqual(['newest', 'oldest', 'middle'])
   })
 })
 

@@ -100,6 +100,13 @@ export async function fetchViewer(token: string): Promise<Viewer> {
   return data.viewer
 }
 
+export function sortNotificationThreadsOldestFirst(threads: NotificationThread[]): NotificationThread[] {
+  return [...threads].sort((a, b) => {
+    const byUpdatedAt = new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()
+    return byUpdatedAt || a.id.localeCompare(b.id)
+  })
+}
+
 export async function fetchNotifications(token: string, show: 'unread' | 'all'): Promise<NotificationThread[]> {
   const url = new URL(`${GITHUB_API_URL}/notifications`)
   url.searchParams.set('all', show === 'all' ? 'true' : 'false')
@@ -111,22 +118,24 @@ export async function fetchNotifications(token: string, show: 'unread' | 'all'):
 
   pruneRecentlyReadThreads()
 
-  return data
-    .filter((thread) => !(show === 'unread' && isRecentlyReadThread(thread.id)))
-    .map((thread) => ({
-      id: thread.id,
-      unread: isRecentlyReadThread(thread.id) ? false : thread.unread,
-      reason: thread.reason,
-      updatedAt: thread.updated_at,
-      lastReadAt: isRecentlyReadThread(thread.id) ? new Date().toISOString() : thread.last_read_at,
-      repoFullName: thread.repository.full_name,
-      repoUrl: thread.repository.html_url,
-      subjectType: thread.subject.type,
-      subjectTitle: thread.subject.title,
-      subjectUrl: thread.subject.url,
-      webUrl: thread.subject.url ? apiUrlToWebUrl(thread.subject.url) : thread.repository.html_url,
-      latestCommentUrl: thread.subject.latest_comment_url,
-    }))
+  return sortNotificationThreadsOldestFirst(
+    data
+      .filter((thread) => !(show === 'unread' && isRecentlyReadThread(thread.id)))
+      .map((thread) => ({
+        id: thread.id,
+        unread: isRecentlyReadThread(thread.id) ? false : thread.unread,
+        reason: thread.reason,
+        updatedAt: thread.updated_at,
+        lastReadAt: isRecentlyReadThread(thread.id) ? new Date().toISOString() : thread.last_read_at,
+        repoFullName: thread.repository.full_name,
+        repoUrl: thread.repository.html_url,
+        subjectType: thread.subject.type,
+        subjectTitle: thread.subject.title,
+        subjectUrl: thread.subject.url,
+        webUrl: thread.subject.url ? apiUrlToWebUrl(thread.subject.url) : thread.repository.html_url,
+        latestCommentUrl: thread.subject.latest_comment_url,
+      })),
+  )
 }
 
 export async function markThreadRead(token: string, threadId: string): Promise<void> {
