@@ -10,10 +10,10 @@ Live site:
 
 Pure client-side SPA.
 
-- no Go backend for GitHub API data
-- optional minimal auth broker for GitHub OAuth device flow
-- GitHub token stays in browser storage after auth
 - app fetches GitHub Notifications + PR details directly from GitHub APIs
+- GitHub token stays in browser storage after auth
+- optional minimal auth broker for GitHub OAuth device flow
+
 
 ## Repo structure
 
