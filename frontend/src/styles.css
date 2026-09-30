@@ -12,6 +12,10 @@ html, body, #root { margin: 0; min-height: 100%; }
 a { color: inherit; }
 button, input, select { font: inherit; }
 button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .6; }
+.text-toggle { padding: 0; border: 0; background: none; color: #0969da; text-decoration: underline; font-size: inherit; }
+.expandable-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.unread-dot { width: 8px; height: 8px; border-radius: 50%; background: #2563eb; flex: 0 0 auto; }
 
 .app-shell { min-height: 100vh; }
 .topbar {
@@ -55,6 +59,9 @@ button { cursor: pointer; }
 .btn.warn { background: #2563eb; }
 .btn.ghost { background: #f9fafb; color: #111827; border-color: #e5e7eb; }
 .btn.mark-read-btn {
+  position: absolute;
+  top: 20px;
+  right: 20px;
   background: #ffffff;
   color: #111827;
   border-color: #d1d5db;
@@ -86,7 +93,8 @@ button { cursor: pointer; }
 .grid-main { display: flex; gap: 24px; align-items: flex-start; overflow: visible; }
 .inbox-list { width: 28rem; min-width: 28rem; display: flex; flex-direction: column; gap: 12px; }
 .preview-pane { min-width: 34rem; flex: 1; padding: 24px; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; align-self: flex-start; }
-.inbox-item { padding: 20px; outline: none; }
+.inbox-row { position: relative; }
+.inbox-item { width: 100%; padding: 20px 72px 20px 20px; outline: none; }
 .pr-state-icon { width: 12px; height: 12px; border-radius: 999px; border: 1px solid transparent; display: inline-block; flex: 0 0 auto; }
 .pr-state-icon.gray { background: #9ca3af; border-color: #6b7280; }
 .pr-state-icon.green { background: #22c55e; border-color: #15803d; }

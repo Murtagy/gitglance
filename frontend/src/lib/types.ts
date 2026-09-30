@@ -136,7 +136,15 @@ export type ThreadPreview = {
   latestCommentWebUrl?: string | null
 }
 
+export type NotificationsPage = {
+  threads: NotificationThread[]
+  pagesLoaded: number
+  nextPage: number | null
+}
+
 export type InboxSnapshot = {
+  pagesLoaded?: number
+  nextPage?: number | null
   show: InboxShow
   threads: NotificationThread[]
   savedAt: string

@@ -1,4 +1,4 @@
-import { buildThreadPreview, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, sortNotificationThreadsOldestFirst } from './github'
+import { buildThreadPreview, fetchNotifications, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, sortNotificationThreadsOldestFirst } from './github'
 import type { NotificationThread, PullRequestData } from './types'
 
 describe('parsePullRequestApiUrl', () => {
@@ -41,6 +41,48 @@ describe('sortNotificationThreadsOldestFirst', () => {
 
     expect(sortNotificationThreadsOldestFirst(threads).map((thread) => thread.id)).toEqual(['oldest', 'middle', 'newest'])
     expect(threads.map((thread) => thread.id)).toEqual(['newest', 'oldest', 'middle'])
+  })
+})
+
+describe('fetchNotifications', () => {
+  function pageResponse(ids: string[], hasNext: boolean): Response {
+    return new Response(JSON.stringify(ids.map((id: string) => ({
+      id, unread: true, reason: 'mention', updated_at: `2026-05-07T0${id}:00:00Z`, last_read_at: null,
+      repository: { full_name: 'octo/repo', html_url: 'https://github.com/octo/repo' },
+      subject: { type: 'Issue', title: `Thread ${id}`, url: null, latest_comment_url: null },
+    }))), { headers: hasNext ? { Link: '<https://api.github.com/notifications?page=2>; rel="next"' } : {} })
+  }
+
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('reports next page without fetching it by default', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(pageResponse(['2'], true))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await fetchNotifications('token', 'unread')
+    expect(result.nextPage).toBe(2)
+    expect(result.pagesLoaded).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads requested pages, deduplicates, sorts, and detects final page', async () => {
+    const requestedPages: Array<string | null> = []
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input: RequestInfo | URL): Promise<Response> => {
+      const page = new URL(String(input)).searchParams.get('page')
+      requestedPages.push(page)
+      return page === '1' ? pageResponse(['2'], true) : pageResponse(['2', '1'], false)
+    }))
+    const result = await fetchNotifications('token', 'all', 3)
+    expect(requestedPages).toEqual(['1', '2'])
+    expect(result.threads.map((thread) => thread.id)).toEqual(['1', '2'])
+    expect(result.nextPage).toBeNull()
+    expect(result.pagesLoaded).toBe(2)
+  })
+
+  it('rejects failed later pages rather than replacing inbox with partial data', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(pageResponse(['2'], true))
+      .mockResolvedValueOnce(new Response('rate limited', { status: 403 })))
+    await expect(fetchNotifications('token', 'unread', 2)).rejects.toThrow('GitHub request failed (403)')
   })
 })
 

@@ -1,5 +1,5 @@
 import { hasGitHubMarkReadProxy, proxyMarkThreadRead } from './github-auth'
-import type { NotificationThread, PRFile, PullRequestData, ThreadPreview, Viewer } from './types'
+import type { NotificationThread, NotificationsPage, PRFile, PullRequestData, ThreadPreview, Viewer } from './types'
 
 const GITHUB_API_URL = 'https://api.github.com'
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql'
@@ -34,7 +34,7 @@ function isRecentlyReadThread(threadId: string): boolean {
   return typeof expiresAt === 'number' && expiresAt > Date.now()
 }
 
-async function fetchJSON<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+async function fetchResponse(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const response = await fetch(input, {
     cache: 'no-store',
     ...init,
@@ -43,7 +43,12 @@ async function fetchJSON<T>(input: RequestInfo | URL, init?: RequestInit): Promi
     const text = await response.text().catch(() => '')
     throw new Error(`GitHub request failed (${response.status}): ${text || response.statusText}`)
   }
-  return response.json() as Promise<T>
+  return response
+}
+
+async function fetchJSON<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+  const response = await fetchResponse(input, init)
+  return response.json()
 }
 
 export function apiUrlToWebUrl(apiUrl: string): string {
@@ -107,26 +112,41 @@ export function sortNotificationThreadsOldestFirst(threads: NotificationThread[]
   })
 }
 
-export async function fetchNotifications(token: string, show: 'unread' | 'all'): Promise<NotificationThread[]> {
+type GitHubNotification = {
+  id: string
+  unread: boolean
+  reason: string
+  updated_at: string
+  last_read_at: string | null
+  repository: { full_name: string; html_url: string }
+  subject: { type: string; title: string; url: string | null; latest_comment_url: string | null }
+}
+
+export async function fetchNotifications(token: string, show: 'unread' | 'all', pageCount: number = 1): Promise<NotificationsPage> {
   const url = new URL(`${GITHUB_API_URL}/notifications`)
   url.searchParams.set('all', show === 'all' ? 'true' : 'false')
   url.searchParams.set('participating', 'false')
   url.searchParams.set('per_page', '20')
-  const data = await fetchJSON<any[]>(url, {
-    headers: authHeaders(token),
-  })
+  const threads = new Map<string, NotificationThread>()
+  let pagesLoaded = 0
+  let nextPage: number | null = 1
 
-  pruneRecentlyReadThreads()
+  while (nextPage !== null && pagesLoaded < pageCount) {
+    url.searchParams.set('page', String(nextPage))
+    const response = await fetchResponse(url, { headers: authHeaders(token) })
+    const data: GitHubNotification[] = await response.json()
+    pagesLoaded += 1
+    nextPage = /<[^>]+>;\s*rel="next"/.test(response.headers.get('Link') ?? '') ? pagesLoaded + 1 : null
 
-  return sortNotificationThreadsOldestFirst(
-    data
-      .filter((thread) => !(show === 'unread' && isRecentlyReadThread(thread.id)))
-      .map((thread) => ({
+    for (const thread of data) {
+      const recentlyRead = isRecentlyReadThread(thread.id)
+      if (show === 'unread' && recentlyRead) continue
+      threads.set(thread.id, {
         id: thread.id,
-        unread: isRecentlyReadThread(thread.id) ? false : thread.unread,
+        unread: recentlyRead ? false : thread.unread,
         reason: thread.reason,
         updatedAt: thread.updated_at,
-        lastReadAt: isRecentlyReadThread(thread.id) ? new Date().toISOString() : thread.last_read_at,
+        lastReadAt: recentlyRead ? new Date().toISOString() : thread.last_read_at,
         repoFullName: thread.repository.full_name,
         repoUrl: thread.repository.html_url,
         subjectType: thread.subject.type,
@@ -134,8 +154,11 @@ export async function fetchNotifications(token: string, show: 'unread' | 'all'):
         subjectUrl: thread.subject.url,
         webUrl: thread.subject.url ? apiUrlToWebUrl(thread.subject.url) : thread.repository.html_url,
         latestCommentUrl: thread.subject.latest_comment_url,
-      })),
-  )
+      })
+    }
+  }
+
+  return { threads: sortNotificationThreadsOldestFirst([...threads.values()]), pagesLoaded, nextPage }
 }
 
 export async function markThreadRead(token: string, threadId: string): Promise<void> {

@@ -23,6 +23,16 @@ export function formatShortDateTime(value?: string | null): string {
   }).format(date)
 }
 
+export function formatRelativeTime(value: string, now: number = Date.now()): string {
+  const timestamp = new Date(value).getTime()
+  if (Number.isNaN(timestamp)) return '—'
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000))
+  if (seconds < 60) return 'just now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
+  return `${Math.floor(seconds / 86400)}d ago`
+}
+
 export function truncateText(value: string, max: number): string {
   if (value.length <= max) return value
   return `${value.slice(0, max - 1)}…`

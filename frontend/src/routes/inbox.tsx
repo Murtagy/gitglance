@@ -1,15 +1,26 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
 import { GitHubTokenControls } from '../components/github-token-controls'
+import { ExpandableText } from '../components/expandable-text'
 import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, fetchViewer, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, submitPullRequestReview } from '../lib/github'
-import { formatDateTime, formatShortDateTime, formatStaleness, truncateText } from '../lib/format'
+import { formatDateTime, formatRelativeTime, formatShortDateTime, formatStaleness, truncateText } from '../lib/format'
 import { clearPreviewCaches, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
-import type { InboxShow, NotificationThread, PRFile, PullRequestData, ThreadPreview } from '../lib/types'
+import type { InboxShow, InboxSnapshot, NotificationThread, PRFile, PullRequestData, ThreadPreview } from '../lib/types'
 
 const PREVIEW_CACHE_TTL_MS = 60_000
+
+type ReviewDraft = { mode: 'approve' | 'comment' | 'request_changes' | null; body: string }
+const EMPTY_REVIEW_DRAFT: ReviewDraft = { mode: null, body: '' }
+
+async function fetchInboxSnapshot(token: string, show: InboxShow, pages: number): Promise<InboxSnapshot> {
+  const page = await fetchNotifications(token, show, pages)
+  const snapshot: InboxSnapshot = { ...page, show, savedAt: new Date().toISOString(), source: 'network' }
+  await saveInboxSnapshot(snapshot)
+  return snapshot
+}
 
 function isRefreshOverdue(savedAt: string | undefined, autoRefreshSeconds: number): boolean {
   if (!savedAt) return true
@@ -160,7 +171,7 @@ function TokenSetupCard() {
 }
 
 export function InboxPage() {
-  const { token, clearToken, preferences, setShow } = useAppContext()
+  const { token, preferences, setShow } = useAppContext()
   const { show, selected } = inboxRoute.useSearch() as { show: InboxShow; selected: string }
   const navigate = useNavigate({ from: inboxRoute.fullPath })
   const queryClient = useQueryClient()
@@ -169,6 +180,9 @@ export function InboxPage() {
   const hiddenBaselineSignatureRef = useRef<string | null>(null)
   const [stalenessNow, setStalenessNow] = useState(() => Date.now())
   const [hasUnseenChanges, setHasUnseenChanges] = useState(false)
+  const [reviewDrafts, setReviewDrafts] = useState<Readonly<Record<string, ReviewDraft>>>({})
+
+  useEffect(() => { setReviewDrafts({}) }, [token])
 
   useEffect(() => {
     if (preferences.show !== show) {
@@ -188,10 +202,8 @@ export function InboxPage() {
     enabled: Boolean(token),
     queryFn: async () => {
       try {
-        const threads = await fetchNotifications(token, show)
-        const snapshot = { show, threads, savedAt: new Date().toISOString(), source: 'network' as const }
-        await saveInboxSnapshot(snapshot)
-        return snapshot
+        const pages = queryClient.getQueryData<InboxSnapshot>(['notifications', token, show])?.pagesLoaded ?? 1
+        return await fetchInboxSnapshot(token, show, pages)
       } catch (error) {
         const cached = await loadInboxSnapshot(show)
         if (cached) return { ...cached, source: 'cache' as const }
@@ -251,6 +263,18 @@ export function InboxPage() {
     },
   })
 
+  const loadMoreMutation = useMutation({
+    mutationFn: async () => {
+      const nextPage = notificationsQuery.data?.nextPage
+      if (!nextPage) return
+      await queryClient.fetchQuery({
+        queryKey: ['notifications', token, show],
+        staleTime: 0,
+        queryFn: () => fetchInboxSnapshot(token, show, nextPage),
+      })
+    },
+  })
+
   const refreshMutation = useMutation({
     mutationFn: async () => {
       await clearPreviewCaches()
@@ -271,7 +295,7 @@ export function InboxPage() {
     },
     onMutate: async (thread) => {
       await queryClient.cancelQueries({ queryKey: ['notifications', token] })
-      const previous = queryClient.getQueryData<{ show: InboxShow; threads: NotificationThread[]; savedAt: string; source: 'network' | 'cache' }>(['notifications', token, show])
+      const previous = queryClient.getQueryData<InboxSnapshot>(['notifications', token, show])
 
       if (previous) {
         const currentIndex = previous.threads.findIndex((item) => item.id === thread.id)
@@ -376,7 +400,7 @@ export function InboxPage() {
         if (url) window.open(url, '_blank', 'noopener,noreferrer')
       } else if ((event.key === 'm' || event.key === 'M') && threads.length) {
         event.preventDefault()
-        if (selectedThread && selectedThread.unread) {
+        if (selectedThread?.unread && !markReadMutation.isPending && !notificationsQuery.isFetching) {
           markReadMutation.mutate(selectedThread)
         }
       } else if (event.key === 'r' || event.key === 'R' || event.code === 'KeyR') {
@@ -388,10 +412,6 @@ export function InboxPage() {
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
   }, [markReadMutation, navigate, notificationsQuery.isFetching, previewQuery.data, refreshMutation, selectedThread, threads])
-
-  if (!token) {
-    return <TokenSetupCard />
-  }
 
   useEffect(() => {
     if (!notificationsQuery.dataUpdatedAt || !inboxSignature) return
@@ -407,12 +427,13 @@ export function InboxPage() {
     setHasUnseenChanges(false)
   }, [inboxSignature, notificationsQuery.dataUpdatedAt])
 
-  void stalenessNow
   const staleness = formatStaleness(notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds)
 
   useEffect(() => {
     updateFavicon(Boolean(token) && hasUnseenChanges, refreshMutation.isPending || notificationsQuery.isFetching)
   }, [token, hasUnseenChanges, refreshMutation.isPending, notificationsQuery.isFetching])
+
+  if (!token) return <TokenSetupCard />
 
   return (
     <div className="stack" style={{ gap: 24 }}>
@@ -428,7 +449,6 @@ export function InboxPage() {
         </div>
         <div className="controls">
           <button className="btn success" onClick={runRefresh} disabled={refreshMutation.isPending || notificationsQuery.isFetching}>Refresh Inbox</button>
-          <button className="btn secondary" onClick={clearToken}>Clear local token</button>
         </div>
       </div>
 
@@ -440,10 +460,18 @@ export function InboxPage() {
             <option value="all">All active</option>
           </select>
         </label>
+        <span className="muted small">{threads.length} loaded</span>
         <span className="muted small">Keys: j/k move, o open GitHub, m mark read, r refresh.</span>
       </div>
 
       {notificationsQuery.isError ? <div className="error">{notificationsQuery.error instanceof Error ? notificationsQuery.error.message : 'Failed to load notifications'}</div> : null}
+
+      {markReadMutation.isError ? (
+        <div className="error controls" role="alert">
+          <span>Could not mark “{markReadMutation.variables?.subjectTitle}” as read. {markReadMutation.error.message}</span>
+          <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching} onClick={() => { if (markReadMutation.variables) markReadMutation.mutate(markReadMutation.variables) }}>Retry</button>
+        </div>
+      ) : null}
 
       <div className="grid-main">
         <div className="inbox-list">
@@ -454,40 +482,37 @@ export function InboxPage() {
             const viewerLogin = viewerQuery.data?.login
             const approvedByViewer = Boolean(viewerLogin && prefetchedPreview?.pullRequest && latestReviewAuthors(prefetchedPreview.pullRequest, 'APPROVED').includes(viewerLogin))
             return (
-            <button
-              key={thread.id}
-              type="button"
-              ref={(value) => { rowRefs.current[thread.id] = value }}
-              className={`card inbox-item ${selectedThread?.id === thread.id ? 'selected' : ''}`}
-              onClick={() => {
-                if (selectedThread?.id === thread.id) return
-                startTransition(() => {
-                  navigate({ search: (prev) => ({ ...prev, selected: thread.id }) })
-                })
-              }}
-            >
-              <div className="space-between" style={{ alignItems: 'flex-start' }}>
-                <div className="stack" style={{ gap: 6, textAlign: 'left' }}>
-                  <div className="split">
-                    {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(prefetchedPreview?.pullRequest)} title={prStateIconLabel(prefetchedPreview?.pullRequest)} aria-label={prStateIconLabel(prefetchedPreview?.pullRequest)} /> : null}
-                    <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
-                    <span className={`badge ${thread.unread ? 'blue' : 'gray'}`}>{thread.unread ? 'Unread' : 'Read'}</span>
-                    <span className="badge amber">{formatBadgeText(thread.reason)}</span>
-                    {approvedByViewer ? <span className="badge green">Approved</span> : null}
-                    <span className="badge gray">{formatSubjectType(thread.subjectType)}</span>
+              <div key={thread.id} className="inbox-row">
+                <button
+                  type="button"
+                  ref={(value) => { rowRefs.current[thread.id] = value }}
+                  className={`card inbox-item ${selectedThread?.id === thread.id ? 'selected' : ''}`}
+                  onClick={() => {
+                    if (selectedThread?.id === thread.id) return
+                    startTransition(() => {
+                      navigate({ search: (prev) => ({ ...prev, selected: thread.id }) })
+                    })
+                  }}
+                >
+                  <div className="stack" style={{ gap: 6, textAlign: 'left' }}>
+                    <div className="split">
+                      {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(prefetchedPreview?.pullRequest)} title={prStateIconLabel(prefetchedPreview?.pullRequest)} aria-label={prStateIconLabel(prefetchedPreview?.pullRequest)} /> : null}
+                      <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
+                      {thread.unread ? <span className="unread-dot" role="img" aria-label="Unread" title="Unread" /> : null}
+                      <span className="badge amber">{formatBadgeText(thread.reason)}</span>
+                      {approvedByViewer ? <span className="badge green">Approved</span> : null}
+                      {thread.subjectType !== 'PullRequest' ? <span className="badge gray">{formatSubjectType(thread.subjectType)}</span> : null}
+                    </div>
+                    <div className="inbox-item-title">{thread.subjectTitle}</div>
+                    <time className="muted small" dateTime={thread.updatedAt} title={formatDateTime(thread.updatedAt)}>Updated {formatRelativeTime(thread.updatedAt, stalenessNow)}</time>
                   </div>
-                  <div className="inbox-item-title">{thread.subjectTitle}</div>
-                  <div className="muted small">Updated {formatDateTime(thread.updatedAt)}</div>
-                </div>
+                </button>
                 {thread.unread ? (
                   <button
                     type="button"
                     className="btn mark-read-btn"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      markReadMutation.mutate(thread)
-                    }}
-                    disabled={markReadMutation.isPending}
+                    onClick={() => markReadMutation.mutate(thread)}
+                    disabled={markReadMutation.isPending || notificationsQuery.isFetching}
                     aria-label={`Mark ${thread.subjectTitle} as read`}
                     title="Mark read"
                   >
@@ -495,21 +520,29 @@ export function InboxPage() {
                   </button>
                 ) : null}
               </div>
-            </button>
             )
           })}
+          {notificationsQuery.data?.nextPage ? (
+            <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching || markReadMutation.isPending || loadMoreMutation.isPending} onClick={() => loadMoreMutation.mutate()}>
+              {loadMoreMutation.isPending ? 'Loading…' : 'Load more'}
+            </button>
+          ) : null}
         </div>
 
         <div className="card preview-pane">
           {!selectedThread ? <div className="empty">Select thread to preview.</div> : null}
           {selectedThread ? (
             <PreviewSection
+              key={selectedThread.id}
               thread={selectedThread}
+              reviewDraft={reviewDrafts[selectedThread.id] ?? EMPTY_REVIEW_DRAFT}
+              onReviewDraftChange={(draft: ReviewDraft): void => setReviewDrafts((current) => ({ ...current, [selectedThread.id]: draft }))}
               preview={previewQuery.data}
               isLoading={previewQuery.isLoading}
               error={previewQuery.error instanceof Error ? previewQuery.error.message : ''}
               onMarkRead={() => markReadMutation.mutate(selectedThread)}
               markingRead={markReadMutation.isPending}
+              syncing={notificationsQuery.isFetching}
             />
           ) : null}
         </div>
@@ -525,6 +558,9 @@ function PreviewSection({
   error,
   onMarkRead,
   markingRead,
+  syncing,
+  reviewDraft,
+  onReviewDraftChange,
 }: {
   thread: NotificationThread
   preview?: ThreadPreview
@@ -532,13 +568,15 @@ function PreviewSection({
   error: string
   onMarkRead: () => void
   markingRead: boolean
+  syncing: boolean
+  reviewDraft: ReviewDraft
+  onReviewDraftChange: (draft: ReviewDraft) => void
 }) {
   const { token, preferences } = useAppContext()
   const queryClient = useQueryClient()
   const pr = preview?.pullRequest
   const [filesMode, setFilesMode] = useState<'files' | 'lines'>('files')
-  const [reviewMode, setReviewMode] = useState<'approve' | 'comment' | 'request_changes' | null>(null)
-  const [reviewBody, setReviewBody] = useState('')
+  const { mode: reviewMode, body: reviewBody } = reviewDraft
   const [reviewError, setReviewError] = useState('')
   const parsed = useMemo(() => parsePullRequestApiUrl(thread.subjectUrl), [thread.subjectUrl])
   const defaultFilesMode = useMemo<'files' | 'lines'>(() => {
@@ -567,7 +605,9 @@ function PreviewSection({
   const approvedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'APPROVED') : [], [pr])
   const changesRequestedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'CHANGES_REQUESTED') : [], [pr])
 
+  const reviewPending = useIsMutating({ mutationKey: ['review', token, thread.id] }) > 0
   const reviewMutation = useMutation({
+    mutationKey: ['review', token, thread.id],
     mutationFn: async ({ event, body }: { event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'; body: string }) => {
       if (!pr) throw new Error('No pull request loaded')
       await submitPullRequestReview(token, pr.id, event, body)
@@ -575,8 +615,7 @@ function PreviewSection({
     },
     onSuccess: async () => {
       setReviewError('')
-      setReviewBody('')
-      setReviewMode(null)
+      onReviewDraftChange(EMPTY_REVIEW_DRAFT)
       await queryClient.invalidateQueries({ queryKey: ['preview', token, thread.id] })
       await queryClient.invalidateQueries({ queryKey: ['notifications', token] })
     },
@@ -589,13 +628,8 @@ function PreviewSection({
     setFilesMode(defaultFilesMode)
   }, [defaultFilesMode, thread.id])
 
-  useEffect(() => {
-    setReviewMode(null)
-    setReviewBody('')
-    setReviewError('')
-  }, [thread.id])
-
   const submitReview = (mode: 'approve' | 'comment' | 'request_changes') => {
+    if (reviewPending) return
     const normalizedBody = reviewBody.trim()
     if ((mode === 'comment' || mode === 'request_changes') && !normalizedBody) {
       setReviewError(mode === 'comment' ? 'Comment body required.' : 'Request changes body required.')
@@ -619,7 +653,7 @@ function PreviewSection({
           <div style={{ fontSize: 24, fontWeight: 800 }}>{thread.subjectTitle}</div>
         </div>
         <div className="controls">
-          {thread.unread ? <button className="btn warn" onClick={onMarkRead} disabled={markingRead}>{markingRead ? 'Marking…' : 'Mark read'}</button> : null}
+          {thread.unread ? <button className="btn warn" onClick={onMarkRead} disabled={markingRead || syncing}>{markingRead ? 'Marking…' : 'Mark read'}</button> : null}
           {((preview?.thread.webUrl ?? thread.webUrl) || undefined) ? <a className="btn" href={(preview?.thread.webUrl ?? thread.webUrl) || undefined} target="_blank" rel="noreferrer">Open in GitHub</a> : null}
         </div>
       </div>
@@ -662,7 +696,7 @@ function PreviewSection({
                       </td>
                       <td>{event.author || '—'}</td>
                       <td>
-                        <div>{truncateText(event.body, 90)}</div>
+                        <div><ExpandableText text={event.body} limit={90} /></div>
                         <div className="split tiny muted">
                           {event.path ? <span>{truncateText(event.path, 36)}</span> : null}
                           {event.commitSHA ? <code>{truncateText(event.commitSHA, 10)}</code> : null}
@@ -686,7 +720,7 @@ function PreviewSection({
                 <div style={{ fontWeight: 700 }}>PR summary</div>
               </div>
               <div className="summary-box-body">
-                {pr.body.trim() ? <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5, color: '#4b5563' }}>{truncateText(pr.body.replace(/\s+/g, ' ').trim(), 256)}</div> : null}
+                {pr.body.trim() ? <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5, color: '#4b5563' }}><ExpandableText text={pr.body.trim()} limit={256} /></div> : null}
                 <div className="summary-line"><span className="muted">Author</span><span>{pr.author?.login || '—'}</span></div>
                 <div className="summary-line"><span className="muted">Files changed</span><span>{pr.changedFiles}</span></div>
                 <div className="summary-line"><span className="muted">Lines</span><span><span style={{ color: '#166534', fontWeight: 700 }}>+{pr.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{pr.deletions}</span></span></div>
@@ -700,16 +734,17 @@ function PreviewSection({
                 {pr.state.toUpperCase() === 'OPEN' && !pr.merged && !pr.isDraft ? (
                   <div className="review-actions">
                     <div className="controls">
-                      <button type="button" className={`btn ${reviewMode === 'approve' ? '' : 'secondary'}`} onClick={() => setReviewMode('approve')}>Approve</button>
-                      <button type="button" className={`btn ${reviewMode === 'comment' ? '' : 'secondary'}`} onClick={() => setReviewMode('comment')}>Comment</button>
-                      <button type="button" className={`btn ${reviewMode === 'request_changes' ? 'warn' : 'secondary'}`} onClick={() => setReviewMode('request_changes')}>Request changes</button>
+                      <button type="button" className={`btn ${reviewMode === 'approve' ? '' : 'secondary'}`} disabled={reviewPending} onClick={() => onReviewDraftChange({ ...reviewDraft, mode: 'approve' })}>Approve</button>
+                      <button type="button" className={`btn ${reviewMode === 'comment' ? '' : 'secondary'}`} disabled={reviewPending} onClick={() => onReviewDraftChange({ ...reviewDraft, mode: 'comment' })}>Comment</button>
+                      <button type="button" className={`btn ${reviewMode === 'request_changes' ? 'warn' : 'secondary'}`} disabled={reviewPending} onClick={() => onReviewDraftChange({ ...reviewDraft, mode: 'request_changes' })}>Request changes</button>
                     </div>
                     {reviewMode ? (
                       <div className="stack" style={{ marginTop: 10 }}>
                         <textarea
                           className="form-control"
                           value={reviewBody}
-                          onChange={(event) => setReviewBody(event.target.value)}
+                          disabled={reviewPending}
+                          onChange={(event) => onReviewDraftChange({ ...reviewDraft, body: event.target.value })}
                           placeholder={reviewMode === 'approve' ? 'Optional approval note' : reviewMode === 'comment' ? 'Required review comment' : 'Required change request'}
                         />
                         <div className="controls">
@@ -717,11 +752,11 @@ function PreviewSection({
                             type="button"
                             className={`btn ${reviewMode === 'request_changes' ? 'warn' : reviewMode === 'approve' ? 'success' : ''}`}
                             onClick={() => submitReview(reviewMode)}
-                            disabled={reviewMutation.isPending}
+                            disabled={reviewPending}
                           >
-                            {reviewMutation.isPending ? 'Submitting…' : reviewMode === 'approve' ? 'Submit approval' : reviewMode === 'comment' ? 'Submit comment' : 'Submit change request'}
+                            {reviewPending ? 'Submitting…' : reviewMode === 'approve' ? 'Submit approval' : reviewMode === 'comment' ? 'Submit comment' : 'Submit change request'}
                           </button>
-                          <button type="button" className="btn secondary" onClick={() => { setReviewMode(null); setReviewBody(''); setReviewError('') }} disabled={reviewMutation.isPending}>Cancel</button>
+                          <button type="button" className="btn secondary" onClick={() => { onReviewDraftChange(EMPTY_REVIEW_DRAFT); setReviewError('') }} disabled={reviewPending}>Cancel</button>
                         </div>
                         {reviewError ? <div className="error">{reviewError}</div> : null}
                       </div>

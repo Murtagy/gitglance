@@ -51,6 +51,11 @@ export function SettingsPage() {
         </div>
       </div>
 
+      <div className="build-meta small">
+        <span>Source:</span>
+        <a href={`https://github.com/Murtagy/gitglance/commit/${__APP_COMMIT__}`} target="_blank" rel="noreferrer"><code>{__APP_COMMIT__}</code></a>
+        <span>Built: {__APP_BUILD_TIME__}</span>
+      </div>
     </div>
   )
 }
