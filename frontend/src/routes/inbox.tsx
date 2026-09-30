@@ -722,7 +722,6 @@ function PreviewSection({
               <div className="summary-box-body">
                 {pr.body.trim() ? <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5, color: '#4b5563' }}><ExpandableText text={pr.body.trim()} limit={256} /></div> : null}
                 <div className="summary-line"><span className="muted">Author</span><span>{pr.author?.login || '—'}</span></div>
-                <div className="summary-line"><span className="muted">Files changed</span><span>{pr.changedFiles}</span></div>
                 <div className="summary-line"><span className="muted">Lines</span><span><span style={{ color: '#166534', fontWeight: 700 }}>+{pr.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{pr.deletions}</span></span></div>
                 <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
                 <div className="summary-line">
@@ -764,6 +763,7 @@ function PreviewSection({
                   </div>
                 ) : null}
                 <div className="stack" style={{ marginTop: 12 }}>
+                  <div className="summary-line"><span className="muted">Files changed</span><span>{pr.changedFiles}</span></div>
                   <div className="space-between" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
                     <div className="small muted" style={{ fontWeight: 700 }}>Files modified</div>
                     <div className="controls">
