@@ -35,14 +35,14 @@ const pr: PullRequestData = {
 }
 let queryClient: QueryClient
 
-function renderInbox(token: string = 'token'): void {
+function renderInbox(token: string = 'token', pullRequest: PullRequestData = pr): void {
   sessionStorage.setItem('github-token', token)
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
   const snapshot: InboxSnapshot = { show: 'unread', threads, savedAt: new Date().toISOString(), source: 'network', pagesLoaded: 1, nextPage: 2 }
   queryClient.setQueryData(['notifications', 'token', 'unread'], snapshot)
   queryClient.setQueryData(['viewer', 'token'], { id: 'viewer', login: 'viewer' })
   for (const thread of threads) {
-    queryClient.setQueryData(['preview', 'token', thread.id], buildThreadPreview(thread, { ...pr, id: `pr${thread.id}`, number: Number(thread.id) }))
+    queryClient.setQueryData(['preview', 'token', thread.id], buildThreadPreview(thread, { ...pullRequest, id: `pr${thread.id}`, number: Number(thread.id) }))
   }
   render(<QueryClientProvider client={queryClient}><AppProvider><RouterProvider router={buildRouter(queryClient)} /></AppProvider></QueryClientProvider>)
 }
@@ -60,6 +60,66 @@ beforeEach(() => {
   vi.mocked(submitPullRequestReview).mockResolvedValue(undefined)
 })
 afterEach(() => { cleanup(); queryClient.clear(); vi.unstubAllGlobals() })
+
+it.each([
+  { login: 'viewer', color: 'blue', title: 'Approved by you' },
+  { login: 'another-reviewer', color: 'green', title: 'Approved' },
+])('shows $color approval badges for $login in inbox and summary', async ({ login, color, title }) => {
+  renderInbox('token', {
+    ...pr, reviewDecision: 'APPROVED',
+    reviews: { nodes: [{
+      id: 'review1', databaseId: 1, state: 'APPROVED', createdAt: threads[0].updatedAt,
+      author: { login }, body: '', comments: { nodes: [] },
+    }] },
+  })
+  await screen.findByRole('button', { name: 'Approve' })
+  const badges = screen.getAllByText('Approved', { selector: '.badge' })
+  expect(badges).toHaveLength(3)
+  for (const badge of badges) {
+    expect(badge).toHaveClass(color)
+    expect(badge).toHaveAttribute('title', title)
+  }
+})
+
+it.each(['CHANGES_REQUESTED', 'DISMISSED'])('does not highlight a viewer approval superseded by %s', async (state) => {
+  renderInbox('token', {
+    ...pr, reviewDecision: 'APPROVED',
+    reviews: { nodes: [
+      { login: 'viewer', state: 'APPROVED' },
+      { login: 'viewer', state },
+      { login: 'another-reviewer', state: 'APPROVED' },
+    ].map((review, index) => ({
+      id: `review${index}`, databaseId: index, state: review.state,
+      createdAt: `2026-01-01T00:00:0${index}Z`, author: { login: review.login }, body: '', comments: { nodes: [] },
+    })) },
+  })
+  await screen.findByRole('button', { name: 'Approve' })
+  const badges = screen.getAllByText('Approved', { selector: '.badge' })
+  expect(badges).toHaveLength(3)
+  for (const badge of badges) expect(badge).toHaveClass('green')
+  expect(screen.queryByTitle('Approved by you')).not.toBeInTheDocument()
+})
+
+it.each(['REVIEW_REQUIRED', 'CHANGES_REQUESTED'])('keeps viewer approval visible when overall decision is %s', async (reviewDecision) => {
+  renderInbox('token', {
+    ...pr, reviewDecision,
+    reviews: { nodes: [{
+      id: 'review1', databaseId: 1, state: 'APPROVED', createdAt: threads[0].updatedAt,
+      author: { login: 'viewer' }, body: '', comments: { nodes: [] },
+    }] },
+  })
+  await screen.findByRole('button', { name: 'Approve' })
+  const badges = screen.getAllByText('Approved', { selector: '.badge' })
+  expect(badges).toHaveLength(2)
+  for (const badge of badges) expect(badge).toHaveClass('blue')
+  expect(screen.getByText(reviewDecision === 'REVIEW_REQUIRED' ? 'Review required' : 'Changes requested')).toBeInTheDocument()
+})
+
+it('does not show approval badges without an approval', async () => {
+  renderInbox()
+  await screen.findByRole('button', { name: 'Approve' })
+  expect(screen.queryByText('Approved', { selector: '.badge' })).not.toBeInTheDocument()
+})
 
 it('preserves separate review drafts and modes when switching threads', async () => {
   const user = userEvent.setup()

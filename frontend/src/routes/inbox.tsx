@@ -74,8 +74,12 @@ function formatSubjectType(value: string) {
   return formatBadgeText(value)
 }
 
-function reviewDecisionBadge(value?: string | null) {
-  if (value === 'APPROVED') return <span className="badge green">Approved</span>
+function approvalBadge(approvedByViewer: boolean) {
+  return <span className={`badge ${approvedByViewer ? 'blue' : 'green'}`} title={approvedByViewer ? 'Approved by you' : 'Approved'}>Approved</span>
+}
+
+function reviewDecisionBadge(value: string | null | undefined, approvedByViewer: boolean) {
+  if (value === 'APPROVED') return approvalBadge(approvedByViewer)
   if (value === 'CHANGES_REQUESTED') return <span className="badge red">Changes requested</span>
   if (value === 'REVIEW_REQUIRED') return <span className="badge amber">Review required</span>
   if (!value) return <span className="badge gray">None</span>
@@ -481,6 +485,7 @@ export function InboxPage() {
             const prefetchedPreview = previewByThreadId.get(thread.id)
             const viewerLogin = viewerQuery.data?.login
             const approvedByViewer = Boolean(viewerLogin && prefetchedPreview?.pullRequest && latestReviewAuthors(prefetchedPreview.pullRequest, 'APPROVED').includes(viewerLogin))
+            const hasApproval = approvedByViewer || prefetchedPreview?.pullRequest?.reviewDecision === 'APPROVED'
             return (
               <div key={thread.id} className="inbox-row">
                 <button
@@ -500,7 +505,7 @@ export function InboxPage() {
                       <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
                       {thread.unread ? <span className="unread-dot" role="img" aria-label="Unread" title="Unread" /> : null}
                       <span className="badge amber">{formatBadgeText(thread.reason)}</span>
-                      {approvedByViewer ? <span className="badge green">Approved</span> : null}
+                      {hasApproval ? approvalBadge(approvedByViewer) : null}
                       {thread.subjectType !== 'PullRequest' ? <span className="badge gray">{formatSubjectType(thread.subjectType)}</span> : null}
                     </div>
                     <div className="inbox-item-title">{thread.subjectTitle}</div>
@@ -538,6 +543,7 @@ export function InboxPage() {
               reviewDraft={reviewDrafts[selectedThread.id] ?? EMPTY_REVIEW_DRAFT}
               onReviewDraftChange={(draft: ReviewDraft): void => setReviewDrafts((current) => ({ ...current, [selectedThread.id]: draft }))}
               preview={previewQuery.data}
+              viewerLogin={viewerQuery.data?.login}
               isLoading={previewQuery.isLoading}
               error={previewQuery.error instanceof Error ? previewQuery.error.message : ''}
               onMarkRead={() => markReadMutation.mutate(selectedThread)}
@@ -554,6 +560,7 @@ export function InboxPage() {
 function PreviewSection({
   thread,
   preview,
+  viewerLogin,
   isLoading,
   error,
   onMarkRead,
@@ -564,6 +571,7 @@ function PreviewSection({
 }: {
   thread: NotificationThread
   preview?: ThreadPreview
+  viewerLogin?: string
   isLoading: boolean
   error: string
   onMarkRead: () => void
@@ -603,6 +611,7 @@ function PreviewSection({
   }, [patchesQuery.data, pr])
 
   const approvedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'APPROVED') : [], [pr])
+  const approvedByViewer = Boolean(viewerLogin && approvedBy.includes(viewerLogin))
   const changesRequestedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'CHANGES_REQUESTED') : [], [pr])
 
   const reviewPending = useIsMutating({ mutationKey: ['review', token, thread.id] }) > 0
@@ -726,7 +735,7 @@ function PreviewSection({
                 <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
                 <div className="summary-line">
                   <span className="muted">Review decision</span>
-                  {pr.isDraft ? <span className="badge gray">Not ready for review</span> : reviewDecisionBadge(pr.reviewDecision)}
+                  {pr.isDraft ? <span className="badge gray">Not ready for review</span> : reviewDecisionBadge(pr.reviewDecision, approvedByViewer)}
                   {!pr.isDraft && pr.reviewDecision === 'APPROVED' && approvedBy.length ? <span className="muted small">by {approvedBy.join(', ')}</span> : null}
                   {!pr.isDraft && pr.reviewDecision === 'CHANGES_REQUESTED' && changesRequestedBy.length ? <span className="muted small">by {changesRequestedBy.join(', ')}</span> : null}
                 </div>
