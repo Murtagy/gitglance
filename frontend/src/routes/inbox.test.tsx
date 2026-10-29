@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from '@tanstack/react-router'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppProvider } from '../lib/app-context'
 import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, markThreadRead, submitPullRequestReview } from '../lib/github'
@@ -35,13 +35,13 @@ const pr: PullRequestData = {
 }
 let queryClient: QueryClient
 
-function renderInbox(token: string = 'token', pullRequest: PullRequestData = pr): void {
+function renderInbox(token: string = 'token', pullRequest: PullRequestData = pr, inboxThreads: NotificationThread[] = threads): void {
   sessionStorage.setItem('github-token', token)
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
-  const snapshot: InboxSnapshot = { show: 'unread', threads, savedAt: new Date().toISOString(), source: 'network', pagesLoaded: 1, nextPage: 2 }
+  const snapshot: InboxSnapshot = { show: 'unread', threads: inboxThreads, savedAt: new Date().toISOString(), source: 'network', pagesLoaded: 1, nextPage: 2 }
   queryClient.setQueryData(['notifications', 'token', 'unread'], snapshot)
   queryClient.setQueryData(['viewer', 'token'], { id: 'viewer', login: 'viewer' })
-  for (const thread of threads) {
+  for (const thread of inboxThreads) {
     queryClient.setQueryData(['preview', 'token', thread.id], buildThreadPreview(thread, { ...pullRequest, id: `pr${thread.id}`, number: Number(thread.id) }))
   }
   render(<QueryClientProvider client={queryClient}><AppProvider><RouterProvider router={buildRouter(queryClient)} /></AppProvider></QueryClientProvider>)
@@ -60,6 +60,33 @@ beforeEach(() => {
   vi.mocked(submitPullRequestReview).mockResolvedValue(undefined)
 })
 afterEach(() => { cleanup(); queryClient.clear(); vi.unstubAllGlobals() })
+
+it.each([
+  { reason: 'review_requested', tone: 'amber', label: 'Review requested' },
+  { reason: 'subscribed', tone: 'gray', label: 'Watching / subscribed' },
+  { reason: 'mention', tone: 'blue', label: 'Mention' },
+  { reason: 'team_mention', tone: 'blue', label: 'Team mention' },
+  { reason: 'manual', tone: 'blue', label: 'Manual' },
+  { reason: 'new_reason', tone: 'blue', label: 'New reason' },
+])('distinguishes $reason cards and reason badges with $tone styling', async ({ reason, tone, label }) => {
+  renderInbox('token', pr, [{ ...threads[0], reason }])
+  const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  expect(card).toHaveClass(`reason-${tone}`)
+  expect(within(card).getByText(label, { selector: '.badge' })).toHaveClass(tone)
+})
+
+it('preserves notification reason styling when changing selected card', async () => {
+  const user = userEvent.setup()
+  renderInbox('token', pr, [threads[0], { ...threads[1], reason: 'subscribed' }])
+  const requestedCard = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  const watchingCard = screen.getByRole('button', { name: /octo\/repo.*Second PR/ })
+  expect(requestedCard).toHaveClass('selected', 'reason-amber')
+  await user.click(watchingCard)
+  expect(watchingCard).toHaveClass('selected', 'reason-gray')
+  expect(watchingCard).toHaveFocus()
+  expect(requestedCard).not.toHaveClass('selected')
+  expect(requestedCard).toHaveClass('reason-amber')
+})
 
 it.each([
   { login: 'viewer', color: 'blue', title: 'Approved by you' },

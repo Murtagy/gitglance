@@ -69,6 +69,12 @@ function formatBadgeText(value: string) {
   return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : value
 }
 
+function notificationReasonTone(reason: string): 'amber' | 'gray' | 'blue' {
+  if (reason === 'review_requested') return 'amber'
+  if (reason === 'subscribed') return 'gray'
+  return 'blue'
+}
+
 function formatSubjectType(value: string) {
   if (value === 'PullRequest') return 'Pull Request'
   return formatBadgeText(value)
@@ -486,12 +492,13 @@ export function InboxPage() {
             const viewerLogin = viewerQuery.data?.login
             const approvedByViewer = Boolean(viewerLogin && prefetchedPreview?.pullRequest && latestReviewAuthors(prefetchedPreview.pullRequest, 'APPROVED').includes(viewerLogin))
             const hasApproval = approvedByViewer || prefetchedPreview?.pullRequest?.reviewDecision === 'APPROVED'
+            const reasonTone = notificationReasonTone(thread.reason)
             return (
               <div key={thread.id} className="inbox-row">
                 <button
                   type="button"
                   ref={(value) => { rowRefs.current[thread.id] = value }}
-                  className={`card inbox-item ${selectedThread?.id === thread.id ? 'selected' : ''}`}
+                  className={`card inbox-item reason-${reasonTone} ${selectedThread?.id === thread.id ? 'selected' : ''}`}
                   onClick={() => {
                     if (selectedThread?.id === thread.id) return
                     startTransition(() => {
@@ -504,7 +511,7 @@ export function InboxPage() {
                       {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(prefetchedPreview?.pullRequest)} title={prStateIconLabel(prefetchedPreview?.pullRequest)} aria-label={prStateIconLabel(prefetchedPreview?.pullRequest)} /> : null}
                       <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
                       {thread.unread ? <span className="unread-dot" role="img" aria-label="Unread" title="Unread" /> : null}
-                      <span className="badge amber">{formatBadgeText(thread.reason)}</span>
+                      <span className={`badge ${reasonTone}`}>{thread.reason === 'subscribed' ? 'Watching / subscribed' : formatBadgeText(thread.reason)}</span>
                       {hasApproval ? approvalBadge(approvedByViewer) : null}
                       {thread.subjectType !== 'PullRequest' ? <span className="badge gray">{formatSubjectType(thread.subjectType)}</span> : null}
                     </div>
