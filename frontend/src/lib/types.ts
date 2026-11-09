@@ -113,6 +113,19 @@ export type PullRequestData = {
   reviewDecision?: string | null
 }
 
+export type RequestedPullRequest = Pick<PullRequestData, 'id' | 'number' | 'title' | 'url' | 'repository' | 'author'> & {
+  updatedAt: string
+}
+
+export type ReviewRequestsPage = {
+  pullRequests: RequestedPullRequest[]
+  totalCount: number
+  nextCursor: string | null
+  warning?: string
+}
+
+export type ReviewDraft = { mode: 'approve' | 'comment' | 'request_changes' | null; body: string }
+
 export type PreviewEvent = {
   type: string
   author: string
@@ -124,9 +137,7 @@ export type PreviewEvent = {
   state: string
 }
 
-export type ThreadPreview = {
-  thread: NotificationThread
-  pullRequest?: PullRequestData
+export type PullRequestActivity = {
   events: PreviewEvent[]
   commitsCount: number
   commentsCount: number
@@ -134,6 +145,11 @@ export type ThreadPreview = {
   changesSince?: string | null
   changesSinceIsAll: boolean
   latestCommentWebUrl?: string | null
+}
+
+export type ThreadPreview = PullRequestActivity & {
+  thread: NotificationThread
+  pullRequest?: PullRequestData
 }
 
 export type NotificationsPage = {

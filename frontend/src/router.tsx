@@ -3,6 +3,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { useAppContext } from './lib/app-context'
 import { InboxPage } from './routes/inbox'
 import { SettingsPage } from './routes/settings'
+import { ReviewsPage } from './routes/reviews'
 
 function RootLayout() {
   const { token } = useAppContext()
@@ -15,6 +16,7 @@ function RootLayout() {
           <div className="topbar-row">
             <nav>
               <Link className={pathname === '/' ? 'active' : ''} to="/" search={{ show: 'unread', selected: '' }}>Inbox</Link>
+              <Link className={pathname === '/reviews' ? 'active' : ''} to="/reviews" search={{ selected: '' }}>Reviews</Link>
               <Link className={pathname === '/settings' ? 'active' : ''} to="/settings">Settings</Link>
               {token ? <span className="muted small">Browser-local GitHub token active</span> : <span className="muted small">No token loaded</span>}
             </nav>
@@ -46,13 +48,22 @@ export const inboxRoute = createRoute({
   }),
 })
 
+export const reviewsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reviews',
+  component: ReviewsPage,
+  validateSearch: (search: Record<string, unknown>) => ({
+    selected: typeof search.selected === 'string' ? search.selected : '',
+  }),
+})
+
 export const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
   component: SettingsPage,
 })
 
-const routeTree = rootRoute.addChildren([inboxRoute, settingsRoute])
+const routeTree = rootRoute.addChildren([inboxRoute, reviewsRoute, settingsRoute])
 
 export function buildRouter(queryClient: QueryClient) {
   return createRouter({

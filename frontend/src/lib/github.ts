@@ -1,5 +1,5 @@
 import { hasGitHubMarkReadProxy, proxyMarkThreadRead } from './github-auth'
-import type { NotificationThread, NotificationsPage, PRFile, PullRequestData, ThreadPreview, Viewer } from './types'
+import type { NotificationThread, NotificationsPage, PRFile, PullRequestActivity, PullRequestData, RequestedPullRequest, ReviewRequestsPage, ThreadPreview, Viewer } from './types'
 
 const GITHUB_API_URL = 'https://api.github.com'
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql'
@@ -103,6 +103,51 @@ export async function fetchViewer(token: string): Promise<Viewer> {
   const query = `query { viewer { id login } }`
   const data = await fetchGraphQL<{ viewer: Viewer }>(token, query)
   return data.viewer
+}
+
+// GitHub includes requests to the viewer's teams, not just direct requests.
+export const REVIEW_REQUESTS_SEARCH = 'is:pr is:open draft:false review-requested:@me sort:updated-desc'
+
+export async function fetchReviewRequests(token: string, after: string | null = null): Promise<ReviewRequestsPage> {
+  const query = `
+    query($search: String!, $after: String) {
+      search(query: $search, type: ISSUE, first: 20, after: $after) {
+        issueCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          __typename
+          ... on PullRequest {
+            id
+            number
+            title
+            url
+            updatedAt
+            repository { nameWithOwner }
+            author { login }
+          }
+        }
+      }
+    }
+  `
+  type SearchNode = (RequestedPullRequest & { __typename: 'PullRequest' }) | { __typename: 'Issue' } | null
+  const response = await fetchGraphQLResponse<{
+    search: {
+      issueCount: number
+      pageInfo: { hasNextPage: boolean; endCursor: string | null }
+      nodes: SearchNode[]
+    }
+  }>(token, query, { search: REVIEW_REQUESTS_SEARCH, after })
+  // Cross-organization searches can return accessible PRs alongside SSO errors.
+  const search = response.data?.search
+  const warning = response.errors?.map((error) => error.message).join('; ')
+  if (!search) throw new Error(warning || 'Missing review search data')
+
+  return {
+    ...(warning ? { warning } : {}),
+    pullRequests: search.nodes.filter((node): node is RequestedPullRequest & { __typename: 'PullRequest' } => node?.__typename === 'PullRequest'),
+    totalCount: search.issueCount,
+    nextCursor: search.pageInfo.hasNextPage ? search.pageInfo.endCursor : null,
+  }
 }
 
 export function sortNotificationThreadsOldestFirst(threads: NotificationThread[]): NotificationThread[] {
@@ -321,13 +366,16 @@ type GraphQLResponse<T> = {
   errors?: Array<{ message: string }>
 }
 
-async function fetchGraphQL<T>(token: string, query: string, variables?: Record<string, unknown>): Promise<T> {
-  const response = await fetchJSON<GraphQLResponse<T>>(GITHUB_GRAPHQL_URL, {
+async function fetchGraphQLResponse<T>(token: string, query: string, variables?: Record<string, unknown>): Promise<GraphQLResponse<T>> {
+  return fetchJSON<GraphQLResponse<T>>(GITHUB_GRAPHQL_URL, {
     method: 'POST',
     headers: authHeaders(token, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({ query, variables }),
   })
+}
 
+async function fetchGraphQL<T>(token: string, query: string, variables?: Record<string, unknown>): Promise<T> {
+  const response = await fetchGraphQLResponse<T>(token, query, variables)
   if (response.errors?.length) {
     throw new Error(response.errors.map((error) => error.message).join('; '))
   }
@@ -353,16 +401,36 @@ export async function submitPullRequestReview(token: string, pullRequestId: stri
   })
 }
 
+export function latestReviewAuthors(pr: PullRequestData, state: 'APPROVED' | 'CHANGES_REQUESTED'): string[] {
+  const latestByAuthor = new Map<string, { state: string; createdAt: string }>()
+
+  for (const review of pr.reviews.nodes) {
+    const login = review.author?.login?.trim()
+    if (!login) continue
+    const existing = latestByAuthor.get(login)
+    if (!existing || new Date(review.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
+      latestByAuthor.set(login, { state: review.state, createdAt: review.createdAt })
+    }
+  }
+
+  return [...latestByAuthor.entries()]
+    .filter(([, review]) => review.state === state)
+    .map(([login]) => login)
+    .sort((a, b) => a.localeCompare(b))
+}
+
 export function buildThreadPreview(thread: NotificationThread, pr?: PullRequestData): ThreadPreview {
-  const preview: ThreadPreview = {
-    thread,
-    pullRequest: pr,
+  return { thread, pullRequest: pr, ...buildPullRequestActivity(pr, thread.lastReadAt) }
+}
+
+export function buildPullRequestActivity(pr?: PullRequestData, since?: string | null): PullRequestActivity {
+  const preview: PullRequestActivity = {
     events: [],
     commitsCount: 0,
     commentsCount: 0,
     reviewsCount: 0,
-    changesSince: thread.lastReadAt ?? null,
-    changesSinceIsAll: !thread.lastReadAt,
+    changesSince: since ?? null,
+    changesSinceIsAll: !since,
     latestCommentWebUrl: null,
   }
 

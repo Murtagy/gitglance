@@ -1,4 +1,4 @@
-import { buildThreadPreview, fetchNotifications, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, sortNotificationThreadsOldestFirst } from './github'
+import { buildPullRequestActivity, buildThreadPreview, fetchNotifications, fetchReviewRequests, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, sortNotificationThreadsOldestFirst } from './github'
 import type { NotificationThread, PullRequestData } from './types'
 
 describe('parsePullRequestApiUrl', () => {
@@ -86,6 +86,62 @@ describe('fetchNotifications', () => {
   })
 })
 
+describe('fetchReviewRequests', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('searches pending user and team requests without relying on notifications', async () => {
+    const pullRequest = {
+      __typename: 'PullRequest', id: 'pr1', number: 42, title: 'Requested PR',
+      url: 'https://github.com/octo/repo/pull/42', updatedAt: '2026-05-07T10:00:00Z',
+      repository: { nameWithOwner: 'octo/repo' }, author: null,
+    }
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: {
+      search: { issueCount: 2, pageInfo: { hasNextPage: true, endCursor: 'cursor-1' }, nodes: [pullRequest, null] },
+    } })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchReviewRequests('token')
+    expect(result).toEqual({ pullRequests: [pullRequest], totalCount: 2, nextCursor: 'cursor-1' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://api.github.com/graphql')
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer token' })
+    const { query, variables } = JSON.parse(String(init?.body))
+    expect(query).toContain('first: 20')
+    expect(variables).toEqual({ search: 'is:pr is:open draft:false review-requested:@me sort:updated-desc', after: null })
+  })
+
+  it('passes the search cursor and stops at the final page', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: {
+      search: { issueCount: 0, pageInfo: { hasNextPage: false, endCursor: 'last' }, nodes: [] },
+    } })))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchReviewRequests('token', 'cursor-1')).toEqual({ pullRequests: [], totalCount: 0, nextCursor: null })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).variables.after).toBe('cursor-1')
+  })
+
+  it('keeps accessible requests and reports partial access errors', async () => {
+    const pullRequest = {
+      __typename: 'PullRequest', id: 'pr1', number: 42, title: 'Accessible PR',
+      url: 'https://github.com/octo/repo/pull/42', updatedAt: '2026-05-07T10:00:00Z',
+      repository: { nameWithOwner: 'octo/repo' }, author: null,
+    }
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      data: { search: { issueCount: 2, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [pullRequest, null] } },
+      errors: [{ message: 'Authorize your token for SSO' }],
+    }))))
+    expect(await fetchReviewRequests('token')).toEqual({
+      pullRequests: [pullRequest], totalCount: 2, nextCursor: null, warning: 'Authorize your token for SSO',
+    })
+  })
+
+  it('rejects GraphQL errors rather than returning an empty queue', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      data: { search: null }, errors: [{ message: 'API rate limit exceeded' }],
+    }))))
+    await expect(fetchReviewRequests('token')).rejects.toThrow('API rate limit exceeded')
+  })
+})
+
 describe('buildThreadPreview', () => {
   const thread: NotificationThread = {
     id: '1',
@@ -138,6 +194,23 @@ describe('buildThreadPreview', () => {
     deletions: 2,
     reviewDecision: 'APPROVED',
   }
+
+  it('builds recent PR activity without notification state', () => {
+    const preview = buildPullRequestActivity(pr)
+    expect(preview.events).toHaveLength(3)
+    expect(preview.changesSince).toBeNull()
+    expect(preview.changesSinceIsAll).toBe(true)
+    expect(preview.latestCommentWebUrl).toBe(`${pr.url}#pullrequestreview-99`)
+  })
+
+  it('keeps last-read filtering when building an inbox preview', () => {
+    const preview = buildThreadPreview({ ...thread, lastReadAt: '2026-05-07T09:36:00Z' }, pr)
+    expect(preview.events.map((event) => event.type)).toEqual(['review'])
+    expect(preview.commitsCount).toBe(0)
+    expect(preview.commentsCount).toBe(0)
+    expect(preview.reviewsCount).toBe(1)
+    expect(preview.changesSinceIsAll).toBe(false)
+  })
 
   it('counts new activity since last read', () => {
     const preview = buildThreadPreview(thread, pr)

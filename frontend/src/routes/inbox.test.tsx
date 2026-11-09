@@ -148,6 +148,24 @@ it('does not show approval badges without an approval', async () => {
   expect(screen.queryByText('Approved', { selector: '.badge' })).not.toBeInTheDocument()
 })
 
+it('refreshes the reviewed PR without refetching unrelated inbox previews', async () => {
+  const user = userEvent.setup()
+  vi.mocked(fetchPullRequestDetails).mockResolvedValue({
+    ...pr, reviewDecision: 'APPROVED',
+    reviews: { nodes: [{
+      id: 'approval', databaseId: 1, state: 'APPROVED', createdAt: threads[0].updatedAt,
+      author: { login: 'viewer' }, body: '', comments: { nodes: [] },
+    }] },
+  })
+  renderInbox()
+  await user.click(await screen.findByRole('button', { name: 'Approve' }))
+  await user.click(screen.getByRole('button', { name: 'Submit approval' }))
+  await waitFor(() => expect(screen.getAllByTitle('Approved by you')).toHaveLength(2))
+  expect(within(screen.getByRole('button', { name: /octo\/repo.*Second PR/ })).queryByText('Approved')).not.toBeInTheDocument()
+  expect(fetchPullRequestDetails).toHaveBeenCalledTimes(1)
+  expect(fetchPullRequestDetails).toHaveBeenCalledWith('token', 'octo', 'repo', 1)
+})
+
 it('preserves separate review drafts and modes when switching threads', async () => {
   const user = userEvent.setup()
   renderInbox()

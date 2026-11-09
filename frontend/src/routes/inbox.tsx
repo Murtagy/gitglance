@@ -1,19 +1,16 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
-import { useIsMutating, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
 import { GitHubTokenControls } from '../components/github-token-controls'
-import { ExpandableText } from '../components/expandable-text'
-import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, fetchViewer, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, submitPullRequestReview } from '../lib/github'
-import { formatDateTime, formatRelativeTime, formatShortDateTime, formatStaleness, truncateText } from '../lib/format'
+import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview } from '../components/pull-request-preview'
+import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, latestReviewAuthors, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl } from '../lib/github'
+import { formatDateTime, formatRelativeTime, formatStaleness } from '../lib/format'
 import { clearPreviewCaches, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
-import type { InboxShow, InboxSnapshot, NotificationThread, PRFile, PullRequestData, ThreadPreview } from '../lib/types'
+import type { InboxShow, InboxSnapshot, NotificationThread, PullRequestData, ReviewDraft, ThreadPreview } from '../lib/types'
 
 const PREVIEW_CACHE_TTL_MS = 60_000
-
-type ReviewDraft = { mode: 'approve' | 'comment' | 'request_changes' | null; body: string }
-const EMPTY_REVIEW_DRAFT: ReviewDraft = { mode: null, body: '' }
 
 async function fetchInboxSnapshot(token: string, show: InboxShow, pages: number): Promise<InboxSnapshot> {
   const page = await fetchNotifications(token, show, pages)
@@ -27,19 +24,6 @@ function isRefreshOverdue(savedAt: string | undefined, autoRefreshSeconds: numbe
   const savedAtMs = new Date(savedAt).getTime()
   if (Number.isNaN(savedAtMs)) return true
   return (Date.now() - savedAtMs) >= Math.max(autoRefreshSeconds, 30) * 1000
-}
-
-function activityBadge(value: string) {
-  return <span className="badge blue">{value}</span>
-}
-
-function stateBadge(pr?: PullRequestData) {
-  if (!pr) return <span className="badge gray">Unknown</span>
-  if (pr.merged) return <span className="badge purple">MERGED</span>
-  if (pr.isDraft) return <span className="badge gray">DRAFT</span>
-  if (pr.state.toUpperCase() === 'OPEN') return <span className="badge green">OPEN</span>
-  if (pr.state.toUpperCase() === 'CLOSED') return <span className="badge red">CLOSED</span>
-  return <span className="badge gray">{pr.state}</span>
 }
 
 function prStateIconClass(pr?: PullRequestData) {
@@ -78,52 +62,6 @@ function notificationReasonTone(reason: string): 'amber' | 'gray' | 'blue' {
 function formatSubjectType(value: string) {
   if (value === 'PullRequest') return 'Pull Request'
   return formatBadgeText(value)
-}
-
-function approvalBadge(approvedByViewer: boolean) {
-  return <span className={`badge ${approvedByViewer ? 'blue' : 'green'}`} title={approvedByViewer ? 'Approved by you' : 'Approved'}>Approved</span>
-}
-
-function reviewDecisionBadge(value: string | null | undefined, approvedByViewer: boolean) {
-  if (value === 'APPROVED') return approvalBadge(approvedByViewer)
-  if (value === 'CHANGES_REQUESTED') return <span className="badge red">Changes requested</span>
-  if (value === 'REVIEW_REQUIRED') return <span className="badge amber">Review required</span>
-  if (!value) return <span className="badge gray">None</span>
-  return <span className="badge gray">{value}</span>
-}
-
-function reviewStateBadge(value?: string | null) {
-  if (value === 'APPROVED') return <span className="badge green">APPROVED</span>
-  if (value === 'CHANGES_REQUESTED') return <span className="badge red">CHANGES_REQUESTED</span>
-  if (value === 'COMMENTED') return <span className="badge blue">COMMENTED</span>
-  if (value === 'REVIEW_REQUIRED') return <span className="badge amber">REVIEW_REQUIRED</span>
-  if (!value) return null
-  return <span className="badge gray">{value}</span>
-}
-
-function latestReviewAuthors(pr: PullRequestData, state: 'APPROVED' | 'CHANGES_REQUESTED'): string[] {
-  const latestByAuthor = new Map<string, { state: string; createdAt: string }>()
-
-  for (const review of pr.reviews.nodes) {
-    const login = review.author?.login?.trim()
-    if (!login) continue
-    const existing = latestByAuthor.get(login)
-    if (!existing || new Date(review.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
-      latestByAuthor.set(login, { state: review.state, createdAt: review.createdAt })
-    }
-  }
-
-  return [...latestByAuthor.entries()]
-    .filter(([, review]) => review.state === state)
-    .map(([login]) => login)
-    .sort((a, b) => a.localeCompare(b))
-}
-
-function patchLineClass(line: string) {
-  if (line.startsWith('@@')) return 'patch-line patch-line-hunk'
-  if (line.startsWith('+')) return 'patch-line patch-line-add'
-  if (line.startsWith('-')) return 'patch-line patch-line-del'
-  return 'patch-line'
 }
 
 function updateFavicon(hasUnseenChanges: boolean, syncing: boolean) {
@@ -512,7 +450,7 @@ export function InboxPage() {
                       <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
                       {thread.unread ? <span className="unread-dot" role="img" aria-label="Unread" title="Unread" /> : null}
                       <span className={`badge ${reasonTone}`}>{thread.reason === 'subscribed' ? 'Watching / subscribed' : formatBadgeText(thread.reason)}</span>
-                      {hasApproval ? approvalBadge(approvedByViewer) : null}
+                      {hasApproval ? <ApprovalBadge approvedByViewer={approvedByViewer} /> : null}
                       {thread.subjectType !== 'PullRequest' ? <span className="badge gray">{formatSubjectType(thread.subjectType)}</span> : null}
                     </div>
                     <div className="inbox-item-title">{thread.subjectTitle}</div>
@@ -587,76 +525,7 @@ function PreviewSection({
   reviewDraft: ReviewDraft
   onReviewDraftChange: (draft: ReviewDraft) => void
 }) {
-  const { token, preferences } = useAppContext()
-  const queryClient = useQueryClient()
   const pr = preview?.pullRequest
-  const [filesMode, setFilesMode] = useState<'files' | 'lines'>('files')
-  const { mode: reviewMode, body: reviewBody } = reviewDraft
-  const [reviewError, setReviewError] = useState('')
-  const parsed = useMemo(() => parsePullRequestApiUrl(thread.subjectUrl), [thread.subjectUrl])
-  const defaultFilesMode = useMemo<'files' | 'lines'>(() => {
-    if (!pr) return 'files'
-    return (pr.additions + pr.deletions) <= preferences.autoOpenLinesThreshold ? 'lines' : 'files'
-  }, [pr, preferences.autoOpenLinesThreshold])
-
-  const patchesQuery = useQuery({
-    queryKey: ['pr-files', thread.id],
-    enabled: Boolean(filesMode === 'lines' && pr && parsed),
-    staleTime: PREVIEW_CACHE_TTL_MS,
-    queryFn: () => fetchPullRequestFiles(token, parsed!.owner, parsed!.repo, parsed!.number),
-  })
-
-  const filesWithPatches = useMemo(() => {
-    if (!pr) return [] as PRFile[]
-    if (!patchesQuery.data?.length) return pr.files.nodes
-    const patchByPath = new Map(patchesQuery.data.map((file) => [file.path, file]))
-    return pr.files.nodes.map((file) => ({
-      ...file,
-      patch: patchByPath.get(file.path)?.patch ?? null,
-      blobUrl: patchByPath.get(file.path)?.blobUrl ?? null,
-    }))
-  }, [patchesQuery.data, pr])
-
-  const approvedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'APPROVED') : [], [pr])
-  const approvedByViewer = Boolean(viewerLogin && approvedBy.includes(viewerLogin))
-  const changesRequestedBy = useMemo(() => pr ? latestReviewAuthors(pr, 'CHANGES_REQUESTED') : [], [pr])
-
-  const reviewPending = useIsMutating({ mutationKey: ['review', token, thread.id] }) > 0
-  const reviewMutation = useMutation({
-    mutationKey: ['review', token, thread.id],
-    mutationFn: async ({ event, body }: { event: 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES'; body: string }) => {
-      if (!pr) throw new Error('No pull request loaded')
-      await submitPullRequestReview(token, pr.id, event, body)
-      await clearPreviewCaches()
-    },
-    onSuccess: async () => {
-      setReviewError('')
-      onReviewDraftChange(EMPTY_REVIEW_DRAFT)
-      await queryClient.invalidateQueries({ queryKey: ['preview', token, thread.id] })
-      await queryClient.invalidateQueries({ queryKey: ['notifications', token] })
-    },
-    onError: (mutationError) => {
-      setReviewError(mutationError instanceof Error ? mutationError.message : 'Failed to submit review')
-    },
-  })
-
-  useEffect(() => {
-    setFilesMode(defaultFilesMode)
-  }, [defaultFilesMode, thread.id])
-
-  const submitReview = (mode: 'approve' | 'comment' | 'request_changes') => {
-    if (reviewPending) return
-    const normalizedBody = reviewBody.trim()
-    if ((mode === 'comment' || mode === 'request_changes') && !normalizedBody) {
-      setReviewError(mode === 'comment' ? 'Comment body required.' : 'Request changes body required.')
-      return
-    }
-    setReviewError('')
-    reviewMutation.mutate({
-      event: mode === 'approve' ? 'APPROVE' : mode === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES',
-      body: normalizedBody,
-    })
-  }
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -678,164 +547,17 @@ function PreviewSection({
       {error ? <div className="error">{error}</div> : null}
 
       {preview ? (
-        <>
-          <div className="table-wrap">
-            <div className="table-header space-between" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              <div className="stack" style={{ gap: 6 }}>
-                <div style={{ fontWeight: 700 }}>New activity{preview.changesSinceIsAll ? '' : ' since last read'}</div>
-                <div className="split">
-                  {activityBadge(`${preview.commitsCount} commit${preview.commitsCount === 1 ? '' : 's'}`)}
-                  {activityBadge(`${preview.commentsCount} comment${preview.commentsCount === 1 ? '' : 's'}`)}
-                  {activityBadge(`${preview.reviewsCount} review${preview.reviewsCount === 1 ? '' : 's'}`)}
-                </div>
-              </div>
-              <div className="muted tiny">{preview.changesSince ? formatDateTime(preview.changesSince) : 'All visible activity'}</div>
-            </div>
-            <div className="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>Who</th>
-                    <th>Summary</th>
-                    <th>When</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.events.length ? preview.events.map((event, index) => (
-                    <tr key={`${event.type}-${event.createdAt}-${index}`}>
-                      <td>
-                        <div className="stack" style={{ gap: 4 }}>
-                          <span className="badge blue">{event.type}</span>
-                          {reviewStateBadge(event.state)}
-                        </div>
-                      </td>
-                      <td>{event.author || '—'}</td>
-                      <td>
-                        <div><ExpandableText text={event.body} limit={90} /></div>
-                        <div className="split tiny muted">
-                          {event.path ? <span>{truncateText(event.path, 36)}</span> : null}
-                          {event.commitSHA ? <code>{truncateText(event.commitSHA, 10)}</code> : null}
-                        </div>
-                      </td>
-                      <td className="tiny muted">{formatShortDateTime(event.createdAt)}</td>
-                    </tr>
-                  )) : (
-                    <tr>
-                      <td colSpan={4} className="muted">No new PR activity in fetched window.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {pr ? (
-            <div className="summary-box">
-              <div className="summary-box-header">
-                <div style={{ fontWeight: 700 }}>PR summary</div>
-              </div>
-              <div className="summary-box-body">
-                {pr.body.trim() ? <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5, color: '#4b5563' }}><ExpandableText text={pr.body.trim()} limit={256} /></div> : null}
-                <div className="summary-line"><span className="muted">Author</span><span>{pr.author?.login || '—'}</span></div>
-                <div className="summary-line"><span className="muted">Lines</span><span><span style={{ color: '#166534', fontWeight: 700 }}>+{pr.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{pr.deletions}</span></span></div>
-                <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
-                <div className="summary-line">
-                  <span className="muted">Review decision</span>
-                  {pr.isDraft ? <span className="badge gray">Not ready for review</span> : reviewDecisionBadge(pr.reviewDecision, approvedByViewer)}
-                  {!pr.isDraft && pr.reviewDecision === 'APPROVED' && approvedBy.length ? <span className="muted small">by {approvedBy.join(', ')}</span> : null}
-                  {!pr.isDraft && pr.reviewDecision === 'CHANGES_REQUESTED' && changesRequestedBy.length ? <span className="muted small">by {changesRequestedBy.join(', ')}</span> : null}
-                </div>
-                {pr.state.toUpperCase() === 'OPEN' && !pr.merged && !pr.isDraft ? (
-                  <div className="review-actions">
-                    <div className="controls">
-                      <button type="button" className={`btn ${reviewMode === 'approve' ? '' : 'secondary'}`} disabled={reviewPending} onClick={() => onReviewDraftChange({ ...reviewDraft, mode: 'approve' })}>Approve</button>
-                      <button type="button" className={`btn ${reviewMode === 'comment' ? '' : 'secondary'}`} disabled={reviewPending} onClick={() => onReviewDraftChange({ ...reviewDraft, mode: 'comment' })}>Comment</button>
-                      <button type="button" className={`btn ${reviewMode === 'request_changes' ? 'warn' : 'secondary'}`} disabled={reviewPending} onClick={() => onReviewDraftChange({ ...reviewDraft, mode: 'request_changes' })}>Request changes</button>
-                    </div>
-                    {reviewMode ? (
-                      <div className="stack" style={{ marginTop: 10 }}>
-                        <textarea
-                          className="form-control"
-                          value={reviewBody}
-                          disabled={reviewPending}
-                          onChange={(event) => onReviewDraftChange({ ...reviewDraft, body: event.target.value })}
-                          placeholder={reviewMode === 'approve' ? 'Optional approval note' : reviewMode === 'comment' ? 'Required review comment' : 'Required change request'}
-                        />
-                        <div className="controls">
-                          <button
-                            type="button"
-                            className={`btn ${reviewMode === 'request_changes' ? 'warn' : reviewMode === 'approve' ? 'success' : ''}`}
-                            onClick={() => submitReview(reviewMode)}
-                            disabled={reviewPending}
-                          >
-                            {reviewPending ? 'Submitting…' : reviewMode === 'approve' ? 'Submit approval' : reviewMode === 'comment' ? 'Submit comment' : 'Submit change request'}
-                          </button>
-                          <button type="button" className="btn secondary" onClick={() => { onReviewDraftChange(EMPTY_REVIEW_DRAFT); setReviewError('') }} disabled={reviewPending}>Cancel</button>
-                        </div>
-                        {reviewError ? <div className="error">{reviewError}</div> : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                <div className="stack" style={{ marginTop: 12 }}>
-                  <div className="summary-line"><span className="muted">Files changed</span><span>{pr.changedFiles}</span></div>
-                  <div className="space-between" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-                    <div className="small muted" style={{ fontWeight: 700 }}>Files modified</div>
-                    <div className="controls">
-                      <button type="button" className={`btn ${filesMode === 'files' ? '' : 'secondary'}`} onClick={() => setFilesMode('files')}>Per-file</button>
-                      <button type="button" className={`btn ${filesMode === 'lines' ? '' : 'secondary'}`} onClick={() => setFilesMode('lines')}>Show lines</button>
-                    </div>
-                  </div>
-                  {filesMode === 'files' ? (
-                    <div className="file-list">
-                      {pr.files.nodes.length ? pr.files.nodes.map((file) => (
-                        <div className="file-item" key={file.path}>
-                          <div className="stack" style={{ gap: 2 }}>
-                            <div>{file.path}</div>
-                            <div className="tiny muted">{file.changeType}</div>
-                          </div>
-                          <div className="tiny"><span style={{ color: '#166534', fontWeight: 700 }}>+{file.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{file.deletions}</span></div>
-                        </div>
-                      )) : <div className="muted small">No file list loaded.</div>}
-                    </div>
-                  ) : (
-                    <div className="patch-list">
-                      {patchesQuery.isLoading ? <div className="loading">Loading file patches…</div> : null}
-                      {filesWithPatches.length ? filesWithPatches.map((file) => (
-                        <div className="patch-item" key={file.path}>
-                          <div className="file-item" style={{ border: 'none', padding: 0 }}>
-                            <div className="stack" style={{ gap: 2 }}>
-                              <div>{file.path}</div>
-                              <div className="tiny muted">{file.changeType}</div>
-                            </div>
-                            <div className="tiny"><span style={{ color: '#166534', fontWeight: 700 }}>+{file.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{file.deletions}</span></div>
-                          </div>
-                          {file.patch ? (
-                            <div className="patch-view">
-                              {file.patch.split('\n').map((line, index) => (
-                                <div key={`${file.path}-${index}`} className={patchLineClass(line)}>
-                                  <code>{line || ' '}</code>
-                                </div>
-                              ))}
-                            </div>
-                          ) : <div className="muted small">No patch available from GitHub API for this file.</div>}
-                          {file.blobUrl ? <div><a className="btn secondary" href={file.blobUrl} target="_blank" rel="noreferrer">Open file on GitHub</a></div> : null}
-                        </div>
-                      )) : <div className="muted small">No file list loaded.</div>}
-                    </div>
-                  )}
-                </div>
-                <div className="controls" style={{ marginTop: 12 }}>
-                  <a className="btn secondary" href={`${pr.url}/files`} target="_blank" rel="noreferrer">Open changes</a>
-                  <a className="btn secondary" href={`${pr.url}.diff`} target="_blank" rel="noreferrer">Open raw diff</a>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="notice">No enriched PR preview yet for this notification. Works best for pull request notifications with accessible subject URL.</div>
-          )}
-        </>
+        pr ? (
+          <PullRequestPreview
+            pullRequest={pr}
+            changesSince={preview.changesSince}
+            viewerLogin={viewerLogin}
+            reviewDraft={reviewDraft}
+            onReviewDraftChange={onReviewDraftChange}
+          />
+        ) : (
+          <div className="notice">No enriched PR preview yet for this notification. Works best for pull request notifications with accessible subject URL.</div>
+        )
       ) : null}
     </div>
   )
