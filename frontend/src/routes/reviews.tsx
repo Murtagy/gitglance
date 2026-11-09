@@ -139,13 +139,13 @@ export function ReviewsPage() {
               type="button"
               key={pr.id}
               ref={(value) => { rowRefs.current[pr.id] = value }}
-              className={`card inbox-item reason-amber ${selectedPR?.id === pr.id ? 'selected' : ''}`}
+              className={`card inbox-item ${selectedPR?.id === pr.id ? 'selected' : ''}`}
               style={{ padding: 20, textAlign: 'left' }}
               aria-pressed={selectedPR?.id === pr.id}
               onClick={() => navigate({ search: { selected: pr.id } })}
             >
               <div className="stack" style={{ gap: 6 }}>
-                <div className="split"><strong>{pr.repository.nameWithOwner} #{pr.number}</strong><span className="badge amber">Review requested</span></div>
+                <div className="split"><strong>{pr.repository.nameWithOwner} #{pr.number}</strong></div>
                 <div className="inbox-item-title">{pr.title}</div>
                 <div className="small muted">{pr.author?.login ?? 'Unknown author'} · <time dateTime={pr.updatedAt} title={formatDateTime(pr.updatedAt)}>Updated {formatRelativeTime(pr.updatedAt)}</time></div>
               </div>

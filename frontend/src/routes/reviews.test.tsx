@@ -80,6 +80,23 @@ it('lists requests independently of inbox and fetches only the selected preview'
   expect(fetchPullRequestDetails).toHaveBeenLastCalledWith('token', 'octo', 'repo', 2)
 })
 
+it('keeps review cards neutral without repeated reason badges and preserves selection', async () => {
+  const user = userEvent.setup()
+  renderReviews()
+  const first = await screen.findByRole('button', { name: /octo\/repo #1/ })
+  const second = screen.getByRole('button', { name: /octo\/repo #2/ })
+  for (const card of [first, second]) {
+    expect(card).toHaveClass('card', 'inbox-item')
+    expect(card).not.toHaveClass('reason-amber')
+  }
+  expect(screen.queryByText('Review requested')).not.toBeInTheDocument()
+  expect(first).toHaveClass('selected')
+  await user.click(second)
+  expect(second).toHaveClass('selected')
+  expect(second).toHaveFocus()
+  expect(first).not.toHaveClass('selected')
+})
+
 it('reuses file patches and keeps separate drafts during keyboard navigation', async () => {
   const user = userEvent.setup()
   renderReviews()
