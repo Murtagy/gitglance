@@ -13,11 +13,11 @@ export function ApprovalBadge({ approvedByViewer }: { approvedByViewer: boolean 
   return <span className={`badge ${approvedByViewer ? 'blue' : 'green'}`} title={approvedByViewer ? 'Approved by you' : 'Approved'}>Approved</span>
 }
 
-function stateBadge(pr: PullRequestData) {
+export function PullRequestStateBadge({ pullRequest: pr }: { pullRequest: PullRequestData }) {
   if (pr.merged) return <span className="badge purple">MERGED</span>
+  if (pr.state.toUpperCase() === 'CLOSED') return <span className="badge red">CLOSED</span>
   if (pr.isDraft) return <span className="badge gray">DRAFT</span>
   if (pr.state.toUpperCase() === 'OPEN') return <span className="badge green">OPEN</span>
-  if (pr.state.toUpperCase() === 'CLOSED') return <span className="badge red">CLOSED</span>
   return <span className="badge gray">{pr.state}</span>
 }
 
@@ -183,7 +183,7 @@ export function PullRequestPreview({
           {pr.body.trim() ? <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.5, color: '#4b5563' }}><ExpandableText text={pr.body.trim()} limit={256} /></div> : null}
           <div className="summary-line"><span className="muted">Author</span><span>{pr.author?.login || '—'}</span></div>
           <div className="summary-line"><span className="muted">Lines</span><span><span style={{ color: '#166534', fontWeight: 700 }}>+{pr.additions}</span> <span className="muted">/</span> <span style={{ color: '#991b1b', fontWeight: 700 }}>-{pr.deletions}</span></span></div>
-          <div className="summary-line"><span className="muted">State</span>{stateBadge(pr)}</div>
+          <div className="summary-line"><span className="muted">State</span><PullRequestStateBadge pullRequest={pr} /></div>
           <div className="summary-line">
             <span className="muted">Review decision</span>
             {pr.isDraft ? <span className="badge gray">Not ready for review</span> : reviewDecisionBadge(pr.reviewDecision, approvedByViewer)}

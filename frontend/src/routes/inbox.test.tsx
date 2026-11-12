@@ -88,6 +88,46 @@ it('preserves notification reason styling when changing selected card', async ()
   expect(requestedCard).toHaveClass('reason-amber')
 })
 
+it.each([false, true])('shows closed PRs in red ahead of notification reason and draft status (draft: %s)', async (isDraft) => {
+  const user = userEvent.setup()
+  renderInbox('token', { ...pr, state: 'CLOSED', isDraft }, [threads[0], { ...threads[1], reason: 'subscribed' }])
+  const requestedCard = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  const watchingCard = screen.getByRole('button', { name: /octo\/repo.*Second PR/ })
+  for (const card of [requestedCard, watchingCard]) {
+    expect(card).toHaveClass('pr-closed')
+    expect(within(card).getByText('Closed')).toHaveClass('red')
+    expect(within(card).getByLabelText('Closed pull request')).toHaveClass('red')
+  }
+  expect(within(requestedCard).getByText('Review requested')).toHaveClass('amber')
+  expect(within(watchingCard).getByText('Watching / subscribed')).toHaveClass('gray')
+  for (const badge of screen.getAllByText('CLOSED')) expect(badge).toHaveClass('red')
+  expect(screen.queryByText('DRAFT')).not.toBeInTheDocument()
+  await user.click(watchingCard)
+  expect(watchingCard).toHaveClass('selected', 'pr-closed')
+  expect(watchingCard).toHaveFocus()
+  expect(requestedCard).toHaveClass('pr-closed')
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+})
+
+it('keeps merged PRs purple rather than treating them as closed', async () => {
+  renderInbox('token', { ...pr, state: 'MERGED', merged: true, isDraft: true })
+  const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  expect(card).not.toHaveClass('pr-closed')
+  expect(within(card).getByLabelText('Merged pull request')).toHaveClass('purple')
+  for (const badge of screen.getAllByText('MERGED')) expect(badge).toHaveClass('purple')
+  expect(screen.queryByText('Closed')).not.toBeInTheDocument()
+})
+
+it('keeps open draft PRs gray without labeling them closed', async () => {
+  renderInbox('token', { ...pr, isDraft: true })
+  const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  expect(card).toHaveClass('reason-amber')
+  expect(card).not.toHaveClass('pr-closed')
+  expect(within(card).getByLabelText('Draft pull request')).toHaveClass('gray')
+  for (const badge of screen.getAllByText('DRAFT')) expect(badge).toHaveClass('gray')
+  expect(screen.queryByText('Closed')).not.toBeInTheDocument()
+})
+
 it.each([
   { login: 'viewer', color: 'blue', title: 'Approved by you' },
   { login: 'another-reviewer', color: 'green', title: 'Approved' },

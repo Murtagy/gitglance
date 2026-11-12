@@ -4,7 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
 import { GitHubTokenControls } from '../components/github-token-controls'
-import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview } from '../components/pull-request-preview'
+import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview, PullRequestStateBadge } from '../components/pull-request-preview'
 import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, latestReviewAuthors, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl } from '../lib/github'
 import { formatDateTime, formatRelativeTime, formatStaleness } from '../lib/format'
 import { clearPreviewCaches, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
@@ -29,18 +29,18 @@ function isRefreshOverdue(savedAt: string | undefined, autoRefreshSeconds: numbe
 function prStateIconClass(pr?: PullRequestData) {
   if (!pr) return 'pr-state-icon gray'
   if (pr.merged) return 'pr-state-icon purple'
+  if (pr.state.toUpperCase() === 'CLOSED') return 'pr-state-icon red'
   if (pr.isDraft) return 'pr-state-icon gray'
   if (pr.state.toUpperCase() === 'OPEN') return 'pr-state-icon green'
-  if (pr.state.toUpperCase() === 'CLOSED') return 'pr-state-icon red'
   return 'pr-state-icon gray'
 }
 
 function prStateIconLabel(pr?: PullRequestData) {
   if (!pr) return 'PR state unknown'
   if (pr.merged) return 'Merged pull request'
+  if (pr.state.toUpperCase() === 'CLOSED') return 'Closed pull request'
   if (pr.isDraft) return 'Draft pull request'
   if (pr.state.toUpperCase() === 'OPEN') return 'Open pull request'
-  if (pr.state.toUpperCase() === 'CLOSED') return 'Closed pull request'
   return `${pr.state} pull request`
 }
 
@@ -427,16 +427,18 @@ export function InboxPage() {
           {!notificationsQuery.isLoading && !threads.length ? <div className="card empty">No inbox threads found.</div> : null}
           {threads.map((thread) => {
             const prefetchedPreview = previewByThreadId.get(thread.id)
+            const pr = prefetchedPreview?.pullRequest
+            const isClosed = Boolean(pr && !pr.merged && pr.state.toUpperCase() === 'CLOSED')
             const viewerLogin = viewerQuery.data?.login
-            const approvedByViewer = Boolean(viewerLogin && prefetchedPreview?.pullRequest && latestReviewAuthors(prefetchedPreview.pullRequest, 'APPROVED').includes(viewerLogin))
-            const hasApproval = approvedByViewer || prefetchedPreview?.pullRequest?.reviewDecision === 'APPROVED'
+            const approvedByViewer = Boolean(viewerLogin && pr && latestReviewAuthors(pr, 'APPROVED').includes(viewerLogin))
+            const hasApproval = approvedByViewer || pr?.reviewDecision === 'APPROVED'
             const reasonTone = notificationReasonTone(thread.reason)
             return (
               <div key={thread.id} className="inbox-row">
                 <button
                   type="button"
                   ref={(value) => { rowRefs.current[thread.id] = value }}
-                  className={`card inbox-item reason-${reasonTone} ${selectedThread?.id === thread.id ? 'selected' : ''}`}
+                  className={`card inbox-item reason-${reasonTone} ${isClosed ? 'pr-closed' : ''} ${selectedThread?.id === thread.id ? 'selected' : ''}`}
                   onClick={() => {
                     if (selectedThread?.id === thread.id) return
                     startTransition(() => {
@@ -446,10 +448,11 @@ export function InboxPage() {
                 >
                   <div className="stack" style={{ gap: 6, textAlign: 'left' }}>
                     <div className="split">
-                      {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(prefetchedPreview?.pullRequest)} title={prStateIconLabel(prefetchedPreview?.pullRequest)} aria-label={prStateIconLabel(prefetchedPreview?.pullRequest)} /> : null}
+                      {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(pr)} title={prStateIconLabel(pr)} aria-label={prStateIconLabel(pr)} /> : null}
                       <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
                       {thread.unread ? <span className="unread-dot" role="img" aria-label="Unread" title="Unread" /> : null}
                       <span className={`badge ${reasonTone}`}>{thread.reason === 'subscribed' ? 'Watching / subscribed' : formatBadgeText(thread.reason)}</span>
+                      {isClosed ? <span className="badge red">Closed</span> : null}
                       {hasApproval ? <ApprovalBadge approvedByViewer={approvedByViewer} /> : null}
                       {thread.subjectType !== 'PullRequest' ? <span className="badge gray">{formatSubjectType(thread.subjectType)}</span> : null}
                     </div>
@@ -533,6 +536,7 @@ function PreviewSection({
         <div className="stack" style={{ gap: 4 }}>
           <div className="split small muted">
             <span style={{ fontWeight: 700, color: '#111827' }}>{thread.repoFullName}{pr ? ` #${pr.number}` : ''}</span>
+            {pr ? <PullRequestStateBadge pullRequest={pr} /> : null}
             <span>Updated {formatDateTime(thread.updatedAt)}</span>
           </div>
           <div style={{ fontSize: 24, fontWeight: 800 }}>{thread.subjectTitle}</div>
