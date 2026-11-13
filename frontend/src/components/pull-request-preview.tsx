@@ -13,7 +13,7 @@ export function ApprovalBadge({ approvedByViewer }: { approvedByViewer: boolean 
   return <span className={`badge ${approvedByViewer ? 'blue' : 'green'}`} title={approvedByViewer ? 'Approved by you' : 'Approved'}>Approved</span>
 }
 
-export function PullRequestStateBadge({ pullRequest: pr }: { pullRequest: PullRequestData }) {
+export function PullRequestStateBadge({ pullRequest: pr }: { pullRequest: Pick<PullRequestData, 'state' | 'isDraft' | 'merged'> }) {
   if (pr.merged) return <span className="badge purple">MERGED</span>
   if (pr.state.toUpperCase() === 'CLOSED') return <span className="badge red">CLOSED</span>
   if (pr.isDraft) return <span className="badge gray">DRAFT</span>

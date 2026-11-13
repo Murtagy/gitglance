@@ -113,8 +113,17 @@ export type PullRequestData = {
   reviewDecision?: string | null
 }
 
-export type RequestedPullRequest = Pick<PullRequestData, 'id' | 'number' | 'title' | 'url' | 'repository' | 'author'> & {
+export type RequestedReviewer =
+  | { __typename: 'User'; login: string }
+  | { __typename: 'Team' | 'EnterpriseTeam' | 'Bot' | 'Mannequin' }
+
+export type RequestedPullRequest = Pick<PullRequestData, 'id' | 'number' | 'title' | 'url' | 'repository' | 'author' | 'state' | 'isDraft' | 'merged' | 'reviewDecision'> & {
   updatedAt: string
+  reviews: { nodes: Array<Pick<PullRequestData['reviews']['nodes'][number], 'state' | 'createdAt' | 'author'> | null> } | null
+  reviewRequests: {
+    nodes: Array<{ requestedReviewer: RequestedReviewer | null } | null>
+    pageInfo: { hasNextPage: boolean }
+  } | null
 }
 
 export type ReviewRequestsPage = {

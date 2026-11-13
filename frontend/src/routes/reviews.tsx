@@ -3,13 +3,50 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useNavigate } from '@tanstack/react-router'
 import { reviewsRoute } from '../router'
 import { GitHubTokenControls } from '../components/github-token-controls'
-import { EMPTY_REVIEW_DRAFT, PullRequestPreview } from '../components/pull-request-preview'
+import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview, PullRequestStateBadge } from '../components/pull-request-preview'
 import { useAppContext } from '../lib/app-context'
 import { fetchPullRequestDetails, fetchReviewRequests, fetchViewer, REVIEW_REQUESTS_SEARCH } from '../lib/github'
 import { formatDateTime, formatRelativeTime } from '../lib/format'
-import type { ReviewDraft } from '../lib/types'
+import type { RequestedPullRequest, ReviewDraft } from '../lib/types'
 
 const SEARCH_URL = `https://github.com/search?type=pullrequests&q=${encodeURIComponent(REVIEW_REQUESTS_SEARCH)}`
+
+function isViewerRequested(pr: RequestedPullRequest, viewerLogin?: string): boolean {
+  return Boolean(viewerLogin && pr.reviewRequests?.nodes.some((request) => {
+    const reviewer = request?.requestedReviewer
+    return reviewer?.__typename === 'User' && reviewer.login.toLowerCase() === viewerLogin.toLowerCase()
+  }))
+}
+
+function reviewCardStatus(pr: RequestedPullRequest, approvedByViewer: boolean, viewerLogin?: string) {
+  const opinions = pr.reviews?.nodes ?? []
+  const approvedByOthers = opinions.some((review) => review?.state === 'APPROVED' && review.author?.login?.toLowerCase() !== viewerLogin?.toLowerCase())
+  const reviewDecision = pr.reviewDecision || (
+    opinions.some((review) => review?.state === 'CHANGES_REQUESTED') ? 'CHANGES_REQUESTED' :
+    approvedByOthers ? 'APPROVED' : null
+  )
+  if (pr.merged || pr.state.toUpperCase() === 'MERGED') return { tone: 'purple', label: 'Merged' }
+  if (pr.state.toUpperCase() === 'CLOSED') return { tone: 'red', label: 'Closed' }
+  if (pr.isDraft) return { tone: 'gray', label: 'Draft' }
+  if (reviewDecision === 'CHANGES_REQUESTED') return { tone: 'red', label: 'Changes requested' }
+  if (approvedByViewer) return { tone: 'blue', label: 'Approved by you' }
+  if (reviewDecision === 'APPROVED' && (!isViewerRequested(pr, viewerLogin) || approvedByOthers)) return { tone: 'green', label: 'Approved' }
+  return null
+}
+
+function ReviewRequestBadges({ pullRequest: pr, viewerLogin }: { pullRequest: RequestedPullRequest; viewerLogin?: string }) {
+  const reviewers = pr.reviewRequests?.nodes.flatMap((request) => request?.requestedReviewer ? [request.requestedReviewer] : []) ?? []
+  const requestedFromViewer = isViewerRequested(pr, viewerLogin)
+  const requestedFromTeam = reviewers.some((reviewer) => reviewer.__typename === 'Team' || reviewer.__typename === 'EnterpriseTeam')
+  return (
+    <>
+      {requestedFromViewer ? <span className="badge blue" title="Review requested from you">Your review</span> : null}
+      {requestedFromTeam ? <span className="badge gray" title="Review requested from a team">Team review</span> : null}
+      {!pr.reviewRequests || (viewerLogin && !requestedFromViewer && !requestedFromTeam) ? <span className="badge gray">Request details unavailable</span> : null}
+      {pr.reviewRequests?.pageInfo.hasNextPage ? <span className="badge gray">More reviewers on GitHub</span> : null}
+    </>
+  )
+}
 
 export function ReviewsPage() {
   const { token, preferences } = useAppContext()
@@ -74,6 +111,7 @@ export function ReviewsPage() {
   const refresh = () => {
     if (!token || requestsQuery.isFetching || detailsQuery.isFetching) return
     void requestsQuery.refetch()
+    void queryClient.invalidateQueries({ queryKey: ['viewer', token] })
     void queryClient.invalidateQueries({ queryKey: ['pull-request', token] })
     void queryClient.invalidateQueries({ queryKey: ['pr-files', token] })
   }
@@ -122,6 +160,7 @@ export function ReviewsPage() {
         <span>Keys: j/k move, o open GitHub, r refresh.</span>
         <span>GitHub search can take a moment to reflect submitted reviews.</span>
       </div>
+      {viewerQuery.isError ? <div className="notice" role="status">Could not identify your account. Personal review labels are unavailable. Refresh Reviews to retry.</div> : null}
       {warnings.length ? <div className="notice" role="status">Some review requests could not be loaded. {warnings.join('; ')}</div> : null}
       {totalCount > 1000 ? <div className="notice">GitHub search exposes at most 1,000 results. Refine the search on GitHub to see more.</div> : null}
       {requestsQuery.isError ? (
@@ -134,23 +173,33 @@ export function ReviewsPage() {
         <div className="inbox-list">
           {requestsQuery.isLoading ? <div className="card empty loading">Loading review requests…</div> : null}
           {!requestsQuery.isLoading && !requestsQuery.isError && !warnings.length && !pullRequests.length ? <div className="card empty">No pending review requests.</div> : null}
-          {pullRequests.map((pr) => (
-            <button
-              type="button"
-              key={pr.id}
-              ref={(value) => { rowRefs.current[pr.id] = value }}
-              className={`card inbox-item ${selectedPR?.id === pr.id ? 'selected' : ''}`}
-              style={{ padding: 20, textAlign: 'left' }}
-              aria-pressed={selectedPR?.id === pr.id}
-              onClick={() => navigate({ search: { selected: pr.id } })}
-            >
-              <div className="stack" style={{ gap: 6 }}>
-                <div className="split"><strong>{pr.repository.nameWithOwner} #{pr.number}</strong></div>
-                <div className="inbox-item-title">{pr.title}</div>
-                <div className="small muted">{pr.author?.login ?? 'Unknown author'} · <time dateTime={pr.updatedAt} title={formatDateTime(pr.updatedAt)}>Updated {formatRelativeTime(pr.updatedAt)}</time></div>
-              </div>
-            </button>
-          ))}
+          {pullRequests.map((pr) => {
+            const viewerLogin = viewerQuery.data?.login
+            const approvedByViewer = Boolean(viewerLogin && pr.reviewRequests && !pr.reviewRequests.pageInfo.hasNextPage && !isViewerRequested(pr, viewerLogin) && pr.reviews?.nodes.some((review) => review?.state === 'APPROVED' && review.author?.login?.toLowerCase() === viewerLogin.toLowerCase()))
+            const status = reviewCardStatus(pr, approvedByViewer, viewerLogin)
+            return (
+              <button
+                type="button"
+                key={pr.id}
+                ref={(value) => { rowRefs.current[pr.id] = value }}
+                className={`card inbox-item ${status ? `review-state-${status.tone}` : ''} ${selectedPR?.id === pr.id ? 'selected' : ''}`}
+                style={{ padding: 20, textAlign: 'left' }}
+                aria-pressed={selectedPR?.id === pr.id}
+                onClick={() => navigate({ search: { selected: pr.id } })}
+              >
+                <div className="stack" style={{ gap: 6 }}>
+                  <div className="split">
+                    <strong>{pr.repository.nameWithOwner} #{pr.number}</strong>
+                    {status ? <span className={`badge ${status.tone}`}>{status.label}</span> : null}
+                    {approvedByViewer && status?.label !== 'Approved by you' ? <ApprovalBadge approvedByViewer /> : null}
+                    <ReviewRequestBadges pullRequest={pr} viewerLogin={viewerQuery.data?.login} />
+                  </div>
+                  <div className="inbox-item-title">{pr.title}</div>
+                  <div className="small muted">{pr.author?.login ?? 'Unknown author'} · <time dateTime={pr.updatedAt} title={formatDateTime(pr.updatedAt)}>Updated {formatRelativeTime(pr.updatedAt)}</time></div>
+                </div>
+              </button>
+            )
+          })}
           {requestsQuery.hasNextPage ? (
             <button type="button" className="btn secondary" disabled={requestsQuery.isFetching} onClick={() => { void requestsQuery.fetchNextPage() }}>
               {requestsQuery.isFetchingNextPage ? 'Loading…' : 'Load more'}
@@ -162,7 +211,11 @@ export function ReviewsPage() {
             <div className="stack" style={{ gap: 16 }}>
               <div className="space-between" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div className="stack" style={{ gap: 4 }}>
-                  <div className="small muted">{selectedPR.repository.nameWithOwner} #{selectedPR.number} · Updated {formatDateTime(selectedPR.updatedAt)}</div>
+                  <div className="split small muted">
+                    <span>{selectedPR.repository.nameWithOwner} #{selectedPR.number}</span>
+                    <PullRequestStateBadge pullRequest={detailsQuery.data ?? selectedPR} />
+                    <span>Updated {formatDateTime(selectedPR.updatedAt)}</span>
+                  </div>
                   <div style={{ fontSize: 24, fontWeight: 800 }}>{selectedPR.title}</div>
                 </div>
                 <a className="btn" href={selectedPR.url} target="_blank" rel="noreferrer">Open in GitHub</a>

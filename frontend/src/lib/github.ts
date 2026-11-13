@@ -122,8 +122,24 @@ export async function fetchReviewRequests(token: string, after: string | null = 
             title
             url
             updatedAt
+            state
+            isDraft
+            merged
+            reviewDecision
             repository { nameWithOwner }
             author { login }
+            reviews: latestOpinionatedReviews(last: 100) {
+              nodes { state createdAt author { login } }
+            }
+            reviewRequests(first: 100) {
+              pageInfo { hasNextPage }
+              nodes {
+                requestedReviewer {
+                  __typename
+                  ... on User { login }
+                }
+              }
+            }
           }
         }
       }

@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from '@tanstack/react-router'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppProvider } from '../lib/app-context'
 import { fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, fetchReviewRequests, fetchViewer, submitPullRequestReview } from '../lib/github'
@@ -21,6 +21,13 @@ const pullRequests: RequestedPullRequest[] = ['First', 'Second'].map((name, inde
   id: `pr${index + 1}`, number: index + 1, title: `${name} PR`,
   url: `https://github.com/octo/repo/pull/${index + 1}`, updatedAt: '2026-05-07T10:00:00Z',
   repository: { nameWithOwner: 'octo/repo' }, author: { login: 'author' },
+  state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'REVIEW_REQUIRED', reviews: { nodes: [] },
+  reviewRequests: {
+    nodes: [{ requestedReviewer: index === 0
+      ? { __typename: 'User', login: 'viewer' }
+      : { __typename: 'Team' } }],
+    pageInfo: { hasNextPage: false },
+  },
 }))
 function details(number: number): PullRequestData {
   const pr = pullRequests[number - 1]
@@ -80,7 +87,7 @@ it('lists requests independently of inbox and fetches only the selected preview'
   expect(fetchPullRequestDetails).toHaveBeenLastCalledWith('token', 'octo', 'repo', 2)
 })
 
-it('keeps review cards neutral without repeated reason badges and preserves selection', async () => {
+it('keeps pending review cards neutral without repeated reason badges and preserves selection', async () => {
   const user = userEvent.setup()
   renderReviews()
   const first = await screen.findByRole('button', { name: /octo\/repo #1/ })
@@ -95,6 +102,109 @@ it('keeps review cards neutral without repeated reason badges and preserves sele
   expect(second).toHaveClass('selected')
   expect(second).toHaveFocus()
   expect(first).not.toHaveClass('selected')
+})
+
+it.each([
+  { state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'APPROVED', reviewer: 'other', tone: 'green', label: 'Approved' },
+  { state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'APPROVED', reviewer: 'VIEWER', tone: 'blue', label: 'Approved by you' },
+  { state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'REVIEW_REQUIRED', reviewer: 'viewer', tone: 'blue', label: 'Approved by you' },
+  { state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'CHANGES_REQUESTED', reviewer: 'viewer', tone: 'red', label: 'Changes requested' },
+  { state: 'CLOSED', isDraft: true, merged: false, reviewDecision: 'APPROVED', reviewer: 'viewer', tone: 'red', label: 'Closed' },
+  { state: 'MERGED', isDraft: false, merged: true, reviewDecision: 'APPROVED', reviewer: 'viewer', tone: 'purple', label: 'Merged' },
+  { state: 'OPEN', isDraft: true, merged: false, reviewDecision: 'APPROVED', reviewer: 'viewer', tone: 'gray', label: 'Draft' },
+  { state: 'OPEN', isDraft: false, merged: false, reviewDecision: null, reviewer: 'other', tone: 'green', label: 'Approved' },
+  { state: 'OPEN', isDraft: false, merged: false, reviewDecision: null, reviewer: 'other', reviewState: 'CHANGES_REQUESTED', tone: 'red', label: 'Changes requested' },
+])('colors all cards $tone for $label without fetching every preview', async ({ reviewer, reviewState = 'APPROVED', tone, label, ...state }) => {
+  const user = userEvent.setup()
+  const reviews = { nodes: [{ state: reviewState, createdAt: pullRequests[0].updatedAt, author: { login: reviewer } }] }
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: pullRequests.map((pr) => ({ ...pr, ...state, reviews, reviewRequests: pullRequests[1].reviewRequests })), totalCount: 2, nextCursor: null })
+  vi.mocked(fetchPullRequestDetails).mockReturnValue(new Promise(() => {}))
+  renderReviews()
+  const first = await screen.findByRole('button', { name: /octo\/repo #1/ })
+  const second = screen.getByRole('button', { name: /octo\/repo #2/ })
+  await waitFor(() => expect(first).toHaveClass(`review-state-${tone}`))
+  for (const card of [first, second]) {
+    expect(card).toHaveClass(`review-state-${tone}`)
+    expect(within(card).getByText(label)).toHaveClass(tone)
+  }
+  await user.click(second)
+  expect(second).toHaveClass('selected', `review-state-${tone}`)
+  expect(second).toHaveFocus()
+  expect(fetchPullRequestDetails).toHaveBeenCalledTimes(2)
+})
+
+it.each(['REVIEW_REQUIRED', 'APPROVED', null])('keeps re-requested personal reviews pending despite old approval (%s)', async (reviewDecision) => {
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: [{
+    ...pullRequests[0], reviewDecision,
+    reviews: { nodes: [{ state: 'APPROVED', createdAt: pullRequests[0].updatedAt, author: { login: 'viewer' } }] },
+  }], totalCount: 1, nextCursor: null })
+  renderReviews()
+  const card = await screen.findByRole('button', { name: /octo\/repo #1/ })
+  expect(await within(card).findByText('Your review')).toBeInTheDocument()
+  expect(card).not.toHaveClass('review-state-blue')
+  expect(card).not.toHaveClass('review-state-green')
+  expect(within(card).queryByText('Approved by you')).not.toBeInTheDocument()
+})
+
+it('keeps other reviewers’ approvals green while the viewer is personally requested again', async () => {
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: [{
+    ...pullRequests[0], reviewDecision: 'APPROVED',
+    reviews: { nodes: ['viewer', 'other'].map((login) => ({ state: 'APPROVED', createdAt: pullRequests[0].updatedAt, author: { login } })) },
+  }], totalCount: 1, nextCursor: null })
+  renderReviews()
+  const card = await screen.findByRole('button', { name: /octo\/repo #1/ })
+  expect(await within(card).findByText('Your review')).toBeInTheDocument()
+  expect(card).toHaveClass('review-state-green')
+  expect(within(card).getByText('Approved')).toHaveClass('green')
+  expect(within(card).queryByText('Approved by you')).not.toBeInTheDocument()
+})
+
+it('distinguishes direct requests, team requests, and both together', async () => {
+  const both = { ...pullRequests[0], id: 'pr3', number: 3, reviewRequests: {
+    nodes: [...pullRequests[0].reviewRequests!.nodes, ...pullRequests[1].reviewRequests!.nodes],
+    pageInfo: { hasNextPage: false },
+  } }
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: [...pullRequests, both], totalCount: 3, nextCursor: null })
+  renderReviews()
+  const direct = await screen.findByRole('button', { name: /octo\/repo #1/ })
+  const team = screen.getByRole('button', { name: /octo\/repo #2/ })
+  const combined = screen.getByRole('button', { name: /octo\/repo #3/ })
+  expect(await within(direct).findByText('Your review')).toHaveClass('blue')
+  expect(within(direct).queryByText('Team review')).not.toBeInTheDocument()
+  expect(within(team).getByText('Team review')).toHaveClass('gray')
+  expect(within(team).queryByText('Your review')).not.toBeInTheDocument()
+  expect(within(combined).getByText('Your review')).toBeInTheDocument()
+  expect(within(combined).getByText('Team review')).toBeInTheDocument()
+})
+
+it('does not invent team requests when request details are unavailable or truncated', async () => {
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: [
+    { ...pullRequests[0], reviews: null, reviewRequests: null },
+    { ...pullRequests[1], reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'User', login: 'other' } }, null], pageInfo: { hasNextPage: true } } },
+  ], totalCount: 2, nextCursor: null })
+  renderReviews()
+  const first = await screen.findByRole('button', { name: /octo\/repo #1/ })
+  const second = screen.getByRole('button', { name: /octo\/repo #2/ })
+  expect(within(first).getByText('Request details unavailable')).toBeInTheDocument()
+  expect(within(second).getByText('Request details unavailable')).toBeInTheDocument()
+  expect(within(second).getByText('More reviewers on GitHub')).toBeInTheDocument()
+  expect(screen.queryByText('Your review')).not.toBeInTheDocument()
+  expect(screen.queryByText('Team review')).not.toBeInTheDocument()
+})
+
+it('explains unavailable account identity without mislabeling direct requests and allows retry', async () => {
+  const user = userEvent.setup()
+  vi.mocked(fetchViewer).mockRejectedValueOnce(new Error('Identity unavailable'))
+  renderReviews()
+  expect(await screen.findByRole('status')).toHaveTextContent('Personal review labels are unavailable')
+  const direct = screen.getByRole('button', { name: /octo\/repo #1/ })
+  expect(within(direct).queryByText('Request details unavailable')).not.toBeInTheDocument()
+  expect(within(direct).queryByText('Team review')).not.toBeInTheDocument()
+  expect(within(direct).queryByText('Your review')).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh Reviews' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: 'Refresh Reviews' }))
+  expect(await within(direct).findByText('Your review')).toBeInTheDocument()
+  expect(screen.queryByRole('status')).not.toBeInTheDocument()
 })
 
 it('reuses file patches and keeps separate drafts during keyboard navigation', async () => {

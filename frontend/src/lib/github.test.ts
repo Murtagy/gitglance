@@ -94,6 +94,15 @@ describe('fetchReviewRequests', () => {
       __typename: 'PullRequest', id: 'pr1', number: 42, title: 'Requested PR',
       url: 'https://github.com/octo/repo/pull/42', updatedAt: '2026-05-07T10:00:00Z',
       repository: { nameWithOwner: 'octo/repo' }, author: null,
+      state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'APPROVED',
+      reviews: { nodes: [{ state: 'APPROVED', createdAt: '2026-05-07T09:00:00Z', author: { login: 'reviewer' } }] },
+      reviewRequests: {
+        nodes: [
+          { requestedReviewer: { __typename: 'User', login: 'viewer' } },
+          { requestedReviewer: { __typename: 'Team' } },
+        ],
+        pageInfo: { hasNextPage: false },
+      },
     }
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: {
       search: { issueCount: 2, pageInfo: { hasNextPage: true, endCursor: 'cursor-1' }, nodes: [pullRequest, null] },
@@ -107,6 +116,12 @@ describe('fetchReviewRequests', () => {
     expect(init?.headers).toMatchObject({ Authorization: 'Bearer token' })
     const { query, variables } = JSON.parse(String(init?.body))
     expect(query).toContain('first: 20')
+    expect(query).toContain('reviewDecision')
+    expect(query).toContain('latestOpinionatedReviews(last: 100)')
+    expect(query).toContain('reviewRequests(first: 100)')
+    expect(query).toContain('... on User { login }')
+    expect(query).not.toContain('... on Team')
+    expect(query).not.toContain('organization { login }')
     expect(variables).toEqual({ search: 'is:pr is:open draft:false review-requested:@me sort:updated-desc', after: null })
   })
 
