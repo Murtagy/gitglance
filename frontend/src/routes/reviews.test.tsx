@@ -1,27 +1,29 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from '@tanstack/react-router'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppProvider } from '../lib/app-context'
-import { fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, fetchReviewRequests, fetchViewer, submitPullRequestReview } from '../lib/github'
-import type { PullRequestData, RequestedPullRequest } from '../lib/types'
+import { fetchNotifications, fetchPullRequestDetails, fetchPullRequestFiles, fetchReviewRequests, fetchReviewSnoozeActivity, fetchViewer, submitPullRequestReview } from '../lib/github'
+import { deleteReviewSnooze, loadReviewSnoozes, saveReviewSnooze } from '../lib/storage'
+import type { PullRequestData, RequestedPullRequest, ReviewSnooze } from '../lib/types'
 import { buildRouter } from '../router'
 
 vi.mock('../lib/github', async (importOriginal) => ({
   ...await importOriginal<typeof import('../lib/github')>(),
-  fetchNotifications: vi.fn(), fetchViewer: vi.fn(), fetchReviewRequests: vi.fn(),
+  fetchNotifications: vi.fn(), fetchViewer: vi.fn(), fetchReviewRequests: vi.fn(), fetchReviewSnoozeActivity: vi.fn(),
   fetchPullRequestDetails: vi.fn(), fetchPullRequestFiles: vi.fn(), submitPullRequestReview: vi.fn(),
 }))
 vi.mock('../lib/storage', async (importOriginal) => ({
   ...await importOriginal<typeof import('../lib/storage')>(),
   clearPreviewCaches: vi.fn().mockResolvedValue(undefined),
+  loadReviewSnoozes: vi.fn(), saveReviewSnooze: vi.fn(), deleteReviewSnooze: vi.fn(),
 }))
 
 const pullRequests: RequestedPullRequest[] = ['First', 'Second'].map((name, index) => ({
   id: `pr${index + 1}`, number: index + 1, title: `${name} PR`,
   url: `https://github.com/octo/repo/pull/${index + 1}`, updatedAt: '2026-05-07T10:00:00Z',
   repository: { nameWithOwner: 'octo/repo' }, author: { login: 'author' },
-  state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'REVIEW_REQUIRED', reviews: { nodes: [] },
+  state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'REVIEW_REQUIRED', reviews: { nodes: [] }, headRefOid: 'head1',
   reviewRequests: {
     nodes: [{ requestedReviewer: index === 0
       ? { __typename: 'User', login: 'viewer' }
@@ -40,6 +42,10 @@ function details(number: number): PullRequestData {
   }
 }
 let queryClient: QueryClient
+const savedSnoozes = new Map<string, ReviewSnooze>()
+function snoozeRecord(pr = pullRequests[0]): ReviewSnooze {
+  return { pullRequest: pr, snoozedAt: '2026-05-07T10:00:00Z', headRefOid: 'head1' }
+}
 
 function renderReviews(token = 'token') {
   sessionStorage.setItem('github-token', token)
@@ -52,6 +58,14 @@ beforeEach(() => {
   sessionStorage.clear()
   window.history.replaceState({}, '', '/#/reviews')
   vi.clearAllMocks()
+  savedSnoozes.clear()
+  vi.mocked(loadReviewSnoozes).mockImplementation(async (viewerId) => [...savedSnoozes.entries()].filter(([key]) => key.startsWith(`${viewerId}:`)).map(([, snooze]) => snooze))
+  vi.mocked(saveReviewSnooze).mockImplementation(async (viewerId, snooze) => { savedSnoozes.set(`${viewerId}:${snooze.pullRequest.id}`, snooze) })
+  vi.mocked(deleteReviewSnooze).mockImplementation(async (viewerId, snooze) => {
+    const key = `${viewerId}:${snooze.pullRequest.id}`
+    if (savedSnoozes.get(key)?.snoozedAt === snooze.snoozedAt) savedSnoozes.delete(key)
+  })
+  vi.mocked(fetchReviewSnoozeActivity).mockResolvedValue({ headRefOid: 'head1', authorReplied: false, isClosed: false })
   vi.stubGlobal('scrollTo', vi.fn())
   vi.mocked(fetchViewer).mockResolvedValue({ id: 'viewer', login: 'viewer' })
   vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests, totalCount: 2, nextCursor: null })
@@ -61,7 +75,165 @@ beforeEach(() => {
   ])
   vi.mocked(submitPullRequestReview).mockResolvedValue(undefined)
 })
-afterEach(() => { cleanup(); queryClient.clear(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); queryClient.clear(); focusManager.setFocused(undefined); vi.unstubAllGlobals() })
+
+it('snoozes the selected PR across reloads and allows manual restore', async () => {
+  const user = userEvent.setup()
+  renderReviews()
+  await user.click(await screen.findByRole('button', { name: 'Snooze' }))
+  expect(await screen.findByText('Body of Second PR')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /octo\/repo #1/ })).not.toBeInTheDocument()
+  expect(savedSnoozes.get('viewer:pr1')).toMatchObject({ headRefOid: 'head1', pullRequest: { id: 'pr1' } })
+  await user.keyboard('k')
+  expect(screen.getByRole('button', { name: /octo\/repo #2/ })).toHaveAttribute('aria-pressed', 'true')
+
+  cleanup()
+  queryClient.clear()
+  vi.mocked(fetchPullRequestDetails).mockClear()
+  renderReviews()
+  expect(await screen.findByText('Body of Second PR')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /octo\/repo #1/ })).not.toBeInTheDocument()
+  expect(fetchPullRequestDetails).not.toHaveBeenCalledWith('token', 'octo', 'repo', 1)
+  await user.click(screen.getByText('Snoozed (1)', { selector: 'summary' }))
+  await user.click(screen.getByRole('button', { name: 'Restore First PR' }))
+  expect(await screen.findByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it.each([
+  { headRefOid: 'head1', authorReplied: true, isClosed: false, event: 'author reply' },
+  { headRefOid: 'head2', authorReplied: false, isClosed: false, event: 'new commit' },
+])('wakes a snoozed PR on $event', async ({ event: _event, ...activity }) => {
+  savedSnoozes.set('viewer:pr1', snoozeRecord())
+  renderReviews()
+  expect(await screen.findByText('Body of Second PR')).toBeInTheDocument()
+  vi.mocked(fetchReviewSnoozeActivity).mockResolvedValue(activity)
+  await act(async () => { await queryClient.invalidateQueries({ queryKey: ['review-snooze-activity', 'token', 'viewer'] }) })
+  expect(await screen.findByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it('keeps snoozed PRs hidden when only teammate activity updates search results', async () => {
+  savedSnoozes.set('viewer:pr1', snoozeRecord())
+  renderReviews()
+  expect(await screen.findByText('Body of Second PR')).toBeInTheDocument()
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: [{ ...pullRequests[0], updatedAt: '2026-05-07T12:00:00Z' }, pullRequests[1]], totalCount: 2, nextCursor: null })
+  await act(async () => { await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['review-requests', 'token'] }),
+    queryClient.invalidateQueries({ queryKey: ['review-snooze-activity', 'token', 'viewer'] }),
+  ]) })
+  expect(screen.queryByRole('button', { name: /octo\/repo #1/ })).not.toBeInTheDocument()
+  expect(screen.getByText('Snoozed (1)', { selector: 'summary' })).toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(1)
+})
+
+it('checks snoozed PRs outside loaded search pages and refreshes the queue when they wake', async () => {
+  const third = { ...pullRequests[0], id: 'pr3', number: 3, title: 'Third PR' }
+  savedSnoozes.set('viewer:pr3', snoozeRecord(third))
+  renderReviews()
+  expect(await screen.findByText('Body of First PR')).toBeInTheDocument()
+  vi.mocked(fetchReviewSnoozeActivity).mockResolvedValue({ headRefOid: 'head1', authorReplied: true, isClosed: false })
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: [...pullRequests, third], totalCount: 3, nextCursor: null })
+  await act(async () => { await queryClient.invalidateQueries({ queryKey: ['review-snooze-activity', 'token', 'viewer'] }) })
+  expect(await screen.findByRole('button', { name: /octo\/repo #3/ })).toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it('does not hide a PR when saving its snooze fails', async () => {
+  const user = userEvent.setup()
+  vi.mocked(saveReviewSnooze).mockRejectedValueOnce(new Error('Storage full'))
+  renderReviews()
+  await user.click(await screen.findByRole('button', { name: 'Snooze' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not snooze PR. Storage full')
+  expect(screen.getByRole('button', { name: /octo\/repo #1/ })).toHaveAttribute('aria-pressed', 'true')
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it('keeps account-local snoozes separate', async () => {
+  savedSnoozes.set('viewer:pr1', snoozeRecord())
+  savedSnoozes.set('other:pr2', snoozeRecord(pullRequests[1]))
+  vi.mocked(fetchViewer).mockResolvedValue({ id: 'other', login: 'other' })
+  renderReviews()
+  expect(await screen.findByText('Body of First PR')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /octo\/repo #2/ })).not.toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(2)
+})
+
+it('reconciles snoozes and restores made in another tab when focus returns', async () => {
+  renderReviews()
+  expect(await screen.findByText('Body of First PR')).toBeInTheDocument()
+  savedSnoozes.set('viewer:pr1', snoozeRecord())
+  await act(async () => { focusManager.setFocused(false); focusManager.setFocused(true) })
+  expect(await screen.findByText('Body of Second PR')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /octo\/repo #1/ })).not.toBeInTheDocument()
+  savedSnoozes.delete('viewer:pr1')
+  await act(async () => { focusManager.setFocused(false); focusManager.setFocused(true) })
+  expect(await screen.findByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument()
+})
+
+it('keeps an in-flight snooze associated with its original account', async () => {
+  const user = userEvent.setup()
+  let finishSave!: () => void
+  vi.mocked(saveReviewSnooze).mockImplementationOnce(async (viewerId, snooze) => {
+    await new Promise<void>((resolve) => { finishSave = resolve })
+    savedSnoozes.set(`${viewerId}:${snooze.pullRequest.id}`, snooze)
+  })
+  renderReviews()
+  await user.click(await screen.findByRole('button', { name: 'Snooze' }))
+  await act(async () => { queryClient.setQueryData(['viewer', 'token'], { id: 'other', login: 'other' }) })
+  await act(async () => { finishSave() })
+  expect(await screen.findByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument()
+  expect(savedSnoozes.has('viewer:pr1')).toBe(true)
+  expect(savedSnoozes.has('other:pr1')).toBe(false)
+})
+
+it('shows all requests and disables snoozing if local snoozes cannot be loaded', async () => {
+  vi.mocked(loadReviewSnoozes).mockRejectedValueOnce(new Error('Storage unavailable'))
+  renderReviews()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not load snoozed reviews')
+  expect(await screen.findByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Snooze' })).toBeDisabled()
+})
+
+it('explains failed restore and retries without losing the snoozed entry', async () => {
+  const user = userEvent.setup()
+  savedSnoozes.set('viewer:pr1', snoozeRecord())
+  vi.mocked(deleteReviewSnooze).mockRejectedValueOnce(new Error('Storage unavailable'))
+  renderReviews()
+  await user.click(await screen.findByText('Snoozed (1)', { selector: 'summary' }))
+  await user.click(screen.getByRole('button', { name: 'Restore First PR' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not restore PR')
+  expect(savedSnoozes.size).toBe(1)
+  await user.click(screen.getByRole('button', { name: 'Restore First PR' }))
+  expect(await screen.findByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it('has a distinct all-snoozed state with no hidden keyboard selection', async () => {
+  const user = userEvent.setup()
+  renderReviews()
+  await user.click(await screen.findByRole('button', { name: 'Snooze' }))
+  expect(await screen.findByText('Body of Second PR')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Snooze' }))
+  expect(await screen.findByText('All loaded review requests are snoozed.')).toBeInTheDocument()
+  expect(screen.queryByText('No pending review requests.')).not.toBeInTheDocument()
+  await user.keyboard('jk')
+  expect(screen.queryByRole('button', { name: /octo\/repo #/ })).not.toBeInTheDocument()
+  expect(screen.queryByText(/Body of .* PR/)).not.toBeInTheDocument()
+})
+
+it('clearly distinguishes draft and ready-for-review PRs in the same list', async () => {
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: [{ ...pullRequests[0], isDraft: true }, pullRequests[1]], totalCount: 2, nextCursor: null })
+  vi.mocked(fetchPullRequestDetails).mockResolvedValue({ ...details(1), isDraft: true })
+  renderReviews()
+  const draft = await screen.findByRole('button', { name: /octo\/repo #1/ })
+  const open = screen.getByRole('button', { name: /octo\/repo #2/ })
+  expect(draft).toHaveClass('review-state-gray')
+  expect(within(draft).getByText('Draft')).toHaveClass('gray')
+  expect(within(open).getByText('Open')).toHaveClass('green')
+  expect(open).not.toHaveClass('review-state-gray')
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+})
 
 it('lists requests independently of inbox and fetches only the selected preview', async () => {
   const user = userEvent.setup()
@@ -203,7 +375,7 @@ it('explains unavailable account identity without mislabeling direct requests an
   expect(within(direct).queryByText('Your review')).not.toBeInTheDocument()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh Reviews' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: 'Refresh Reviews' }))
-  expect(await within(direct).findByText('Your review')).toBeInTheDocument()
+  expect(await screen.findByText('Your review')).toBeInTheDocument()
   expect(screen.queryByRole('status')).not.toBeInTheDocument()
 })
 
@@ -357,5 +529,5 @@ it('makes GitHub search limits explicit and links to the same search', async () 
   renderReviews()
   expect(await screen.findByText(/GitHub search exposes at most 1,000 results/)).toBeInTheDocument()
   const url = new URL(screen.getByRole('link', { name: 'View search on GitHub' }).getAttribute('href')!)
-  expect(url.searchParams.get('q')).toBe('is:pr is:open draft:false review-requested:@me sort:updated-desc')
+  expect(url.searchParams.get('q')).toBe('is:pr is:open review-requested:@me sort:updated-desc')
 })

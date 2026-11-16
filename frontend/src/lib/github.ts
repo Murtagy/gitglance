@@ -1,5 +1,5 @@
 import { hasGitHubMarkReadProxy, proxyMarkThreadRead } from './github-auth'
-import type { NotificationThread, NotificationsPage, PRFile, PullRequestActivity, PullRequestData, RequestedPullRequest, ReviewRequestsPage, ThreadPreview, Viewer } from './types'
+import type { NotificationThread, NotificationsPage, PRFile, PullRequestActivity, PullRequestData, RequestedPullRequest, ReviewRequestsPage, ReviewResponse, ReviewSnooze, ReviewSnoozeActivity, ThreadPreview, Viewer } from './types'
 
 const GITHUB_API_URL = 'https://api.github.com'
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql'
@@ -106,7 +106,7 @@ export async function fetchViewer(token: string): Promise<Viewer> {
 }
 
 // GitHub includes requests to the viewer's teams, not just direct requests.
-export const REVIEW_REQUESTS_SEARCH = 'is:pr is:open draft:false review-requested:@me sort:updated-desc'
+export const REVIEW_REQUESTS_SEARCH = 'is:pr is:open review-requested:@me sort:updated-desc'
 
 export async function fetchReviewRequests(token: string, after: string | null = null): Promise<ReviewRequestsPage> {
   const query = `
@@ -122,6 +122,7 @@ export async function fetchReviewRequests(token: string, after: string | null = 
             title
             url
             updatedAt
+            headRefOid
             state
             isDraft
             merged
@@ -164,6 +165,81 @@ export async function fetchReviewRequests(token: string, after: string | null = 
     totalCount: search.issueCount,
     nextCursor: search.pageInfo.hasNextPage ? search.pageInfo.endCursor : null,
   }
+}
+
+export function hasAuthorResponseSince(responses: ReadonlyArray<ReviewResponse | null>, authorLogin: string | null | undefined, since: string): boolean {
+  return Boolean(authorLogin && responses.some((response) => {
+    const respondedAt = response && ('submittedAt' in response ? response.submittedAt : response.createdAt)
+    return respondedAt && new Date(respondedAt).getTime() > new Date(since).getTime() && response?.author?.login?.toLowerCase() === authorLogin.toLowerCase()
+  }))
+}
+
+export function shouldWakeReviewSnooze(snooze: ReviewSnooze, activity: ReviewSnoozeActivity): boolean {
+  return activity.isClosed || activity.authorReplied || Boolean(activity.headRefOid && activity.headRefOid !== snooze.headRefOid)
+}
+
+async function fetchInlineAuthorResponse(token: string, pr: Pick<PullRequestData, 'number' | 'repository' | 'author'>, since: string): Promise<boolean> {
+  if (!pr.author?.login) return false
+  const url = new URL(`${GITHUB_API_URL}/repos/${pr.repository.nameWithOwner}/pulls/${pr.number}/comments`)
+  url.searchParams.set('since', since)
+  url.searchParams.set('per_page', '100')
+  let page = 1
+  while (true) {
+    url.searchParams.set('page', String(page))
+    const response = await fetchResponse(url, { headers: authHeaders(token) })
+    const comments: Array<{ created_at: string; user: { login: string } | null }> = await response.json()
+    if (hasAuthorResponseSince(comments.map((comment) => ({ createdAt: comment.created_at, author: comment.user })), pr.author.login, since)) return true
+    if (!/<[^>]+>;\s*rel="next"/.test(response.headers.get('Link') ?? '')) return false
+    page += 1
+  }
+}
+
+export async function fetchReviewSnoozeActivity(token: string, pullRequestId: string, since: string, knownHeadRefOid?: string | null): Promise<ReviewSnoozeActivity> {
+  const query = `
+    query($id: ID!, $since: DateTime!, $after: String) {
+      node(id: $id) {
+        ... on PullRequest {
+          state
+          number
+          repository { nameWithOwner }
+          headRefOid
+          author { login }
+          timelineItems(first: 100, after: $after, since: $since, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW]) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              ... on IssueComment { createdAt author { login } }
+              ... on PullRequestReview { submittedAt author { login } }
+            }
+          }
+        }
+      }
+    }
+  `
+  type ActivityPage = {
+    node: {
+      state: string
+      number: number
+      repository: { nameWithOwner: string }
+      headRefOid: string | null
+      author: { login: string } | null
+      timelineItems: { nodes: Array<ReviewResponse | null>; pageInfo: { hasNextPage: boolean; endCursor: string | null } }
+    } | null
+  }
+  let after: string | null = null
+  do {
+    const data: ActivityPage = await fetchGraphQL<ActivityPage>(token, query, { id: pullRequestId, since, after })
+    const pr = data.node
+    if (!pr) throw new Error('Snoozed pull request is unavailable')
+    if (pr.state.toUpperCase() !== 'OPEN') return { headRefOid: pr.headRefOid, authorReplied: false, isClosed: true }
+    if (knownHeadRefOid !== undefined && pr.headRefOid && pr.headRefOid !== knownHeadRefOid) return { headRefOid: pr.headRefOid, authorReplied: false, isClosed: false }
+    const authorReplied = hasAuthorResponseSince(pr.timelineItems.nodes, pr.author?.login, since)
+    const pageInfo = pr.timelineItems.pageInfo
+    if (authorReplied) return { headRefOid: pr.headRefOid, authorReplied: true, isClosed: false }
+    if (!pageInfo.hasNextPage) return { headRefOid: pr.headRefOid, authorReplied: await fetchInlineAuthorResponse(token, pr, since), isClosed: false }
+    if (!pageInfo.endCursor || pageInfo.endCursor === after) throw new Error('Missing snoozed review activity cursor')
+    after = pageInfo.endCursor
+  } while (after)
+  throw new Error('Incomplete snoozed review activity')
 }
 
 export function sortNotificationThreadsOldestFirst(threads: NotificationThread[]): NotificationThread[] {

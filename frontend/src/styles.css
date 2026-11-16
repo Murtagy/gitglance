@@ -96,7 +96,8 @@ button:disabled { cursor: not-allowed; opacity: .6; }
 .inbox-row { position: relative; }
 .inbox-item { width: 100%; padding: 20px 72px 20px 20px; outline: none; border-left: 4px solid var(--reason-accent, #d1d5db); }
 .inbox-item.reason-amber { --reason-accent: #d97706; background: #fffbeb; }
-.inbox-item.reason-gray, .inbox-item.review-state-gray { --reason-accent: #9ca3af; background: #f9fafb; }
+.inbox-item.reason-gray, .inbox-item.review-state-gray, .inbox-item.pr-draft { --reason-accent: #9ca3af; background: #f9fafb; }
+.inbox-item.pr-draft, .inbox-item.review-state-gray { border-style: dashed; }
 .inbox-item.reason-blue, .inbox-item.review-state-blue { --reason-accent: #3b82f6; background: #eff6ff; }
 .inbox-item.pr-closed, .inbox-item.review-state-red { --reason-accent: #dc2626; background: #fef2f2; }
 .inbox-item.review-state-green { --reason-accent: #16a34a; background: #f0fdf4; }

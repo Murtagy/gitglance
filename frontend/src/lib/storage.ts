@@ -1,4 +1,4 @@
-import type { InboxShow, InboxSnapshot, Preferences, PreviewSnapshot, StorageMode } from './types'
+import type { InboxShow, InboxSnapshot, Preferences, PreviewSnapshot, ReviewSnooze, StorageMode } from './types'
 
 const DB_NAME = 'ghnotifs-spa'
 const DB_VERSION = 1
@@ -108,6 +108,42 @@ export async function savePreviewSnapshot(threadId: string, snapshot: PreviewSna
 
 export async function loadPreviewSnapshot(threadId: string): Promise<PreviewSnapshot | undefined> {
   return getValue<PreviewSnapshot>(`preview:${threadId}`)
+}
+
+export async function loadReviewSnoozes(viewerId: string): Promise<ReviewSnooze[]> {
+  const db = await openDB()
+  const prefix = `review-snooze:${viewerId}:`
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(KV_STORE, 'readonly').objectStore(KV_STORE).getAll(IDBKeyRange.bound(prefix, `${prefix}\uffff`))
+    request.onsuccess = () => resolve(request.result as ReviewSnooze[])
+    request.onerror = () => reject(request.error)
+  })
+}
+
+export async function saveReviewSnooze(viewerId: string, snooze: ReviewSnooze): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(KV_STORE, 'readwrite')
+    tx.objectStore(KV_STORE).put(snooze, `review-snooze:${viewerId}:${snooze.pullRequest.id}`)
+    tx.oncomplete = () => resolve()
+    tx.onerror = tx.onabort = () => reject(tx.error)
+  })
+}
+
+export async function deleteReviewSnooze(viewerId: string, snooze: ReviewSnooze): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(KV_STORE, 'readwrite')
+    const store = tx.objectStore(KV_STORE)
+    const key = `review-snooze:${viewerId}:${snooze.pullRequest.id}`
+    const request = store.get(key)
+    request.onsuccess = () => {
+      // An old activity check must not remove a newer snooze of the same PR.
+      if ((request.result as ReviewSnooze | undefined)?.snoozedAt === snooze.snoozedAt) store.delete(key)
+    }
+    tx.oncomplete = () => resolve()
+    tx.onerror = tx.onabort = () => reject(tx.error)
+  })
 }
 
 const DEFAULT_PREFERENCES: Preferences = {

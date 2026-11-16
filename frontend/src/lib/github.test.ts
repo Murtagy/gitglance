@@ -1,5 +1,5 @@
-import { buildPullRequestActivity, buildThreadPreview, fetchNotifications, fetchReviewRequests, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, sortNotificationThreadsOldestFirst } from './github'
-import type { NotificationThread, PullRequestData } from './types'
+import { buildPullRequestActivity, buildThreadPreview, fetchNotifications, fetchReviewRequests, fetchReviewSnoozeActivity, hasAuthorResponseSince, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, shouldWakeReviewSnooze, sortNotificationThreadsOldestFirst } from './github'
+import type { NotificationThread, PullRequestData, ReviewSnooze } from './types'
 
 describe('parsePullRequestApiUrl', () => {
   it('parses GitHub pull request API URL', () => {
@@ -94,7 +94,7 @@ describe('fetchReviewRequests', () => {
       __typename: 'PullRequest', id: 'pr1', number: 42, title: 'Requested PR',
       url: 'https://github.com/octo/repo/pull/42', updatedAt: '2026-05-07T10:00:00Z',
       repository: { nameWithOwner: 'octo/repo' }, author: null,
-      state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'APPROVED',
+      state: 'OPEN', isDraft: false, merged: false, reviewDecision: 'APPROVED', headRefOid: 'head1',
       reviews: { nodes: [{ state: 'APPROVED', createdAt: '2026-05-07T09:00:00Z', author: { login: 'reviewer' } }] },
       reviewRequests: {
         nodes: [
@@ -122,7 +122,7 @@ describe('fetchReviewRequests', () => {
     expect(query).toContain('... on User { login }')
     expect(query).not.toContain('... on Team')
     expect(query).not.toContain('organization { login }')
-    expect(variables).toEqual({ search: 'is:pr is:open draft:false review-requested:@me sort:updated-desc', after: null })
+    expect(variables).toEqual({ search: 'is:pr is:open review-requested:@me sort:updated-desc', after: null })
   })
 
   it('passes the search cursor and stops at the final page', async () => {
@@ -154,6 +154,96 @@ describe('fetchReviewRequests', () => {
       data: { search: null }, errors: [{ message: 'API rate limit exceeded' }],
     }))))
     await expect(fetchReviewRequests('token')).rejects.toThrow('API rate limit exceeded')
+  })
+})
+
+describe('review snooze wake rules', () => {
+  const since = '2026-05-07T10:00:00Z'
+  const snooze: ReviewSnooze = {
+    pullRequest: { id: 'pr1', number: 1, title: 'PR', url: 'https://github.com/octo/repo/pull/1', repository: { nameWithOwner: 'octo/repo' } },
+    snoozedAt: since, headRefOid: 'head1',
+  }
+
+  it.each([
+    { response: { createdAt: '2026-05-07T11:00:00Z', author: { login: 'AUTHOR' } }, expected: true },
+    { response: { createdAt: '2026-05-07T09:00:00Z', submittedAt: '2026-05-07T11:00:00Z', author: { login: 'author' } }, expected: true },
+    { response: { createdAt: '2026-05-07T11:00:00Z', author: { login: 'teammate' } }, expected: false },
+    { response: { createdAt: '2026-05-07T09:00:00Z', author: { login: 'author' } }, expected: false },
+    { response: { createdAt: '2026-05-07T11:00:00Z', submittedAt: null, author: { login: 'author' } }, expected: false },
+    { response: { createdAt: '2026-05-07T11:00:00Z', author: null }, expected: false },
+    { response: null, expected: false },
+  ])('only counts newly published responses from the author ($expected)', ({ response, expected }) => {
+    expect(hasAuthorResponseSince([response], 'author', since)).toBe(expected)
+  })
+
+  it.each([
+    { headRefOid: 'head1', authorReplied: false, isClosed: false, expected: false },
+    { headRefOid: 'head2', authorReplied: false, isClosed: false, expected: true },
+    { headRefOid: 'head1', authorReplied: true, isClosed: false, expected: true },
+    { headRefOid: null, authorReplied: false, isClosed: false, expected: false },
+    { headRefOid: 'head1', authorReplied: false, isClosed: true, expected: true },
+  ])('only wakes for author replies or a changed commit ($expected)', ({ expected, ...activity }) => {
+    expect(shouldWakeReviewSnooze(snooze, activity)).toBe(expected)
+  })
+})
+
+describe('fetchReviewSnoozeActivity', () => {
+  function page(nodes: unknown[], next: string | null = null, headRefOid = 'head1', state = 'OPEN'): Response {
+    return new Response(JSON.stringify({ data: { node: {
+      headRefOid, state, number: 1, repository: { nameWithOwner: 'octo/repo' }, author: { login: 'author' },
+      timelineItems: { nodes, pageInfo: { hasNextPage: Boolean(next), endCursor: next } },
+    } } }))
+  }
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('checks author comments and published review replies across activity pages', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(page([{ createdAt: '2026-05-07T11:00:00Z', author: { login: 'teammate' } }], 'next'))
+      .mockResolvedValueOnce(page([{ submittedAt: '2026-05-07T12:00:00Z', author: { login: 'author' } }]))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchReviewSnoozeActivity('token', 'pr1', '2026-05-07T10:00:00Z')).toEqual({ headRefOid: 'head1', authorReplied: true, isClosed: false })
+    const { query, variables } = JSON.parse(String(fetchMock.mock.calls[1][1]?.body))
+    expect(query).toContain('itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW]')
+    expect(variables).toEqual({ id: 'pr1', since: '2026-05-07T10:00:00Z', after: 'next' })
+  })
+
+  it('reports unchanged activity without treating other authors as a response', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(page([null, { createdAt: '2026-05-07T11:00:00Z', author: { login: 'teammate' } }]))
+      .mockResolvedValueOnce(new Response('[]')))
+    expect(await fetchReviewSnoozeActivity('token', 'pr1', '2026-05-07T10:00:00Z')).toEqual({ headRefOid: 'head1', authorReplied: false, isClosed: false })
+  })
+
+  it('detects inline author replies on existing submitted reviews across comment pages', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(page([]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ created_at: '2026-05-07T11:00:00Z', user: { login: 'teammate' } }]), { headers: { Link: '<https://api.github.com/repos/octo/repo/pulls/1/comments?page=2>; rel="next"' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ created_at: '2026-05-07T12:00:00Z', user: { login: 'author' } }])))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchReviewSnoozeActivity('token', 'pr1', '2026-05-07T10:00:00Z')).toEqual({ headRefOid: 'head1', authorReplied: true, isClosed: false })
+    const url = new URL(String(fetchMock.mock.calls[2][0]))
+    expect(url.pathname).toBe('/repos/octo/repo/pulls/1/comments')
+    expect(url.searchParams.get('since')).toBe('2026-05-07T10:00:00Z')
+    expect(url.searchParams.get('page')).toBe('2')
+  })
+
+  it('wakes on a new head without requiring inline-comment requests to succeed', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(page([], null, 'head2')).mockRejectedValue(new Error('Comments unavailable'))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchReviewSnoozeActivity('token', 'pr1', '2026-05-07T10:00:00Z', 'head1')).toEqual({ headRefOid: 'head2', authorReplied: false, isClosed: false })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('retires closed PRs without polling their comments forever', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(page([], null, 'head1', 'CLOSED'))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchReviewSnoozeActivity('token', 'pr1', '2026-05-07T10:00:00Z')).toEqual({ headRefOid: 'head1', authorReplied: false, isClosed: true })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects missing PRs rather than waking them on incomplete data', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: { node: null } }))))
+    await expect(fetchReviewSnoozeActivity('token', 'pr1', '2026-05-07T10:00:00Z')).rejects.toThrow('Snoozed pull request is unavailable')
   })
 })
 

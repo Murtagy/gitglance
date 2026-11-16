@@ -121,11 +121,20 @@ it('keeps merged PRs purple rather than treating them as closed', async () => {
 it('keeps open draft PRs gray without labeling them closed', async () => {
   renderInbox('token', { ...pr, isDraft: true })
   const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
-  expect(card).toHaveClass('reason-amber')
+  expect(card).toHaveClass('reason-amber', 'pr-draft')
   expect(card).not.toHaveClass('pr-closed')
+  expect(within(card).getByText('Draft')).toHaveClass('gray')
   expect(within(card).getByLabelText('Draft pull request')).toHaveClass('gray')
   for (const badge of screen.getAllByText('DRAFT')) expect(badge).toHaveClass('gray')
   expect(screen.queryByText('Closed')).not.toBeInTheDocument()
+})
+
+it('labels open PRs distinctly from drafts in inbox cards', async () => {
+  renderInbox()
+  const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  expect(card).not.toHaveClass('pr-draft')
+  expect(within(card).getByText('Open')).toHaveClass('green')
+  expect(within(card).queryByText('Draft')).not.toBeInTheDocument()
 })
 
 it.each([

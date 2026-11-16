@@ -119,11 +119,30 @@ export type RequestedReviewer =
 
 export type RequestedPullRequest = Pick<PullRequestData, 'id' | 'number' | 'title' | 'url' | 'repository' | 'author' | 'state' | 'isDraft' | 'merged' | 'reviewDecision'> & {
   updatedAt: string
+  headRefOid: string | null
   reviews: { nodes: Array<Pick<PullRequestData['reviews']['nodes'][number], 'state' | 'createdAt' | 'author'> | null> } | null
   reviewRequests: {
     nodes: Array<{ requestedReviewer: RequestedReviewer | null } | null>
     pageInfo: { hasNextPage: boolean }
   } | null
+}
+
+export type ReviewSnooze = {
+  pullRequest: Pick<RequestedPullRequest, 'id' | 'number' | 'title' | 'url' | 'repository'>
+  snoozedAt: string
+  headRefOid: string | null
+}
+
+export type ReviewSnoozeActivity = {
+  headRefOid: string | null
+  authorReplied: boolean
+  isClosed: boolean
+}
+
+export type ReviewResponse = {
+  author?: { login?: string | null } | null
+  createdAt?: string | null
+  submittedAt?: string | null
 }
 
 export type ReviewRequestsPage = {

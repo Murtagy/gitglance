@@ -7,6 +7,7 @@ import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview, PullRequestState
 import { useAppContext } from '../lib/app-context'
 import { fetchPullRequestDetails, fetchReviewRequests, fetchViewer, REVIEW_REQUESTS_SEARCH } from '../lib/github'
 import { formatDateTime, formatRelativeTime } from '../lib/format'
+import { useReviewSnoozes } from '../lib/use-review-snoozes'
 import type { RequestedPullRequest, ReviewDraft } from '../lib/types'
 
 const SEARCH_URL = `https://github.com/search?type=pullrequests&q=${encodeURIComponent(REVIEW_REQUESTS_SEARCH)}`
@@ -65,6 +66,9 @@ export function ReviewsPage() {
     queryFn: () => fetchViewer(token),
   })
 
+  const snoozes = useReviewSnoozes(token, viewerQuery.data, preferences.autoRefreshSeconds)
+  const isInitializing = viewerQuery.isPending || snoozes.isLoading
+
   const requestsQuery = useInfiniteQuery({
     queryKey: ['review-requests', token],
     enabled: Boolean(token),
@@ -75,16 +79,20 @@ export function ReviewsPage() {
     refetchOnWindowFocus: true,
   })
 
-  const pullRequests = useMemo(() => {
+  const loadedPullRequests = useMemo(() => {
     const entries = requestsQuery.data?.pages.flatMap((page) => page.pullRequests.map((pr) => [pr.id, pr] as const)) ?? []
     return [...new Map(entries).values()]
   }, [requestsQuery.data])
+  const pullRequests = useMemo(() => {
+    const hiddenIds = new Set(snoozes.snoozes.map((snooze) => snooze.pullRequest.id))
+    return isInitializing ? [] : loadedPullRequests.filter((pr) => !hiddenIds.has(pr.id))
+  }, [isInitializing, loadedPullRequests, snoozes.snoozes])
   const selectedPR = pullRequests.find((pr) => pr.id === selected) ?? pullRequests[0]
   const totalCount = requestsQuery.data?.pages[0]?.totalCount ?? 0
   const warnings = [...new Set(requestsQuery.data?.pages.flatMap((page) => page.warning ? [page.warning] : []) ?? [])]
 
   useEffect(() => {
-    if (!requestsQuery.data) return
+    if (!requestsQuery.data || isInitializing) return
     if (selected !== (selectedPR?.id ?? '')) {
       navigate({ search: { selected: selectedPR?.id ?? '' }, replace: true })
     }
@@ -92,7 +100,7 @@ export function ReviewsPage() {
     for (const id of Object.keys(rowRefs.current)) {
       if (!visibleIds.has(id)) delete rowRefs.current[id]
     }
-  }, [navigate, pullRequests, requestsQuery.data, selected, selectedPR?.id])
+  }, [isInitializing, navigate, pullRequests, requestsQuery.data, selected, selectedPR?.id])
 
   useEffect(() => { if (selectedPR) rowRefs.current[selectedPR.id]?.focus() }, [selectedPR?.id])
 
@@ -111,13 +119,14 @@ export function ReviewsPage() {
   const refresh = () => {
     if (!token || requestsQuery.isFetching || detailsQuery.isFetching) return
     void requestsQuery.refetch()
+    snoozes.refresh()
     void queryClient.invalidateQueries({ queryKey: ['viewer', token] })
     void queryClient.invalidateQueries({ queryKey: ['pull-request', token] })
     void queryClient.invalidateQueries({ queryKey: ['pr-files', token] })
   }
 
   useEffect(() => {
-    if (!token) return
+    if (!token || isInitializing) return
     const onKeyDown = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement | null)?.tagName
       if (tag && ['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return
@@ -138,7 +147,7 @@ export function ReviewsPage() {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [navigate, pullRequests, selectedPR, requestsQuery.isFetching, detailsQuery.isFetching, token])
+  }, [isInitializing, navigate, pullRequests, selectedPR, requestsQuery.isFetching, detailsQuery.isFetching, token])
 
   if (!token) return <div className="card" style={{ padding: 24, maxWidth: 860 }}><GitHubTokenControls /></div>
 
@@ -147,7 +156,7 @@ export function ReviewsPage() {
       <div className="space-between" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div>
           <h1 className="title">Reviews</h1>
-          <p className="subtitle">Open, ready-for-review PRs requesting you or your teams. Limited to repositories your token can access.</p>
+          <p className="subtitle">Open PRs requesting you or your teams, including clearly labeled drafts. Limited to repositories your token can access.</p>
         </div>
         <div className="controls">
           <button type="button" className="btn success" onClick={refresh} disabled={requestsQuery.isFetching || detailsQuery.isFetching}>Refresh Reviews</button>
@@ -155,11 +164,27 @@ export function ReviewsPage() {
         </div>
       </div>
       <div className="controls small muted">
-        <span>{pullRequests.length} of {totalCount} loaded</span>
+        <span>{loadedPullRequests.length} of {totalCount} loaded</span>
+        {snoozes.snoozes.length ? <span>{pullRequests.length} visible · {snoozes.snoozes.length} snoozed locally</span> : null}
         <span>Auto refresh: every {Math.max(preferences.autoRefreshSeconds, 30)}s</span>
         <span>Keys: j/k move, o open GitHub, r refresh.</span>
         <span>GitHub search can take a moment to reflect submitted reviews.</span>
       </div>
+      {snoozes.error ? <div className="error" role="alert">{snoozes.error}</div> : null}
+      {snoozes.snoozes.length ? (
+        <details className="card" style={{ padding: 16 }}>
+          <summary>Snoozed ({snoozes.snoozes.length})</summary>
+          <p className="small muted">Hidden locally until the author replies or a new commit arrives. Checked every {snoozes.checkIntervalSeconds}s while Reviews is open; restore manually anytime.</p>
+          <div className="stack">
+            {snoozes.snoozes.map((snooze) => (
+              <div key={snooze.pullRequest.id} className="space-between">
+                <a href={snooze.pullRequest.url} target="_blank" rel="noreferrer">{snooze.pullRequest.repository.nameWithOwner} #{snooze.pullRequest.number} · {snooze.pullRequest.title}</a>
+                <button type="button" className="btn secondary" disabled={snoozes.isRestoring} aria-label={`Restore ${snooze.pullRequest.title}`} onClick={() => snoozes.restore(snooze)}>Restore</button>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
       {viewerQuery.isError ? <div className="notice" role="status">Could not identify your account. Personal review labels are unavailable. Refresh Reviews to retry.</div> : null}
       {warnings.length ? <div className="notice" role="status">Some review requests could not be loaded. {warnings.join('; ')}</div> : null}
       {totalCount > 1000 ? <div className="notice">GitHub search exposes at most 1,000 results. Refine the search on GitHub to see more.</div> : null}
@@ -171,8 +196,8 @@ export function ReviewsPage() {
       ) : null}
       <div className="grid-main">
         <div className="inbox-list">
-          {requestsQuery.isLoading ? <div className="card empty loading">Loading review requests…</div> : null}
-          {!requestsQuery.isLoading && !requestsQuery.isError && !warnings.length && !pullRequests.length ? <div className="card empty">No pending review requests.</div> : null}
+          {requestsQuery.isLoading || isInitializing ? <div className="card empty loading">Loading review requests…</div> : null}
+          {!requestsQuery.isLoading && !isInitializing && !requestsQuery.isError && !warnings.length && !pullRequests.length ? <div className="card empty">{loadedPullRequests.length ? 'All loaded review requests are snoozed.' : 'No pending review requests.'}</div> : null}
           {pullRequests.map((pr) => {
             const viewerLogin = viewerQuery.data?.login
             const approvedByViewer = Boolean(viewerLogin && pr.reviewRequests && !pr.reviewRequests.pageInfo.hasNextPage && !isViewerRequested(pr, viewerLogin) && pr.reviews?.nodes.some((review) => review?.state === 'APPROVED' && review.author?.login?.toLowerCase() === viewerLogin.toLowerCase()))
@@ -190,7 +215,7 @@ export function ReviewsPage() {
                 <div className="stack" style={{ gap: 6 }}>
                   <div className="split">
                     <strong>{pr.repository.nameWithOwner} #{pr.number}</strong>
-                    {status ? <span className={`badge ${status.tone}`}>{status.label}</span> : null}
+                    {status ? <span className={`badge ${status.tone}`}>{status.label}</span> : <span className="badge green">Open</span>}
                     {approvedByViewer && status?.label !== 'Approved by you' ? <ApprovalBadge approvedByViewer /> : null}
                     <ReviewRequestBadges pullRequest={pr} viewerLogin={viewerQuery.data?.login} />
                   </div>
@@ -218,7 +243,10 @@ export function ReviewsPage() {
                   </div>
                   <div style={{ fontSize: 24, fontWeight: 800 }}>{selectedPR.title}</div>
                 </div>
-                <a className="btn" href={selectedPR.url} target="_blank" rel="noreferrer">Open in GitHub</a>
+                <div className="controls">
+                  <button type="button" className="btn secondary" disabled={!snoozes.canSnooze} onClick={() => snoozes.snooze(selectedPR)}>{snoozes.isSnoozing ? 'Snoozing…' : 'Snooze'}</button>
+                  <a className="btn" href={selectedPR.url} target="_blank" rel="noreferrer">Open in GitHub</a>
+                </div>
               </div>
               {detailsQuery.isLoading ? <div className="loading">Loading preview…</div> : null}
               {detailsQuery.isError ? (
