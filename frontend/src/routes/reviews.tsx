@@ -87,14 +87,17 @@ export function ReviewsPage() {
     const hiddenIds = new Set(snoozes.snoozes.map((snooze) => snooze.pullRequest.id))
     return isInitializing ? [] : loadedPullRequests.filter((pr) => !hiddenIds.has(pr.id))
   }, [isInitializing, loadedPullRequests, snoozes.snoozes])
-  const selectedPR = pullRequests.find((pr) => pr.id === selected) ?? pullRequests[0]
+  const selectedPosition = loadedPullRequests.findIndex((pr) => pr.id === selected)
+  const selectedPR = pullRequests.find((pr) => pr.id === selected)
+    ?? loadedPullRequests.slice(selectedPosition + 1).find((candidate) => pullRequests.some((pr) => pr.id === candidate.id))
+    ?? pullRequests.at(-1)
   const totalCount = requestsQuery.data?.pages[0]?.totalCount ?? 0
   const warnings = [...new Set(requestsQuery.data?.pages.flatMap((page) => page.warning ? [page.warning] : []) ?? [])]
 
   useEffect(() => {
     if (!requestsQuery.data || isInitializing) return
     if (selected !== (selectedPR?.id ?? '')) {
-      navigate({ search: { selected: selectedPR?.id ?? '' }, replace: true })
+      navigate({ search: { selected: selectedPR?.id ?? '' }, replace: true, resetScroll: false })
     }
     const visibleIds = new Set(pullRequests.map((pr) => pr.id))
     for (const id of Object.keys(rowRefs.current)) {
@@ -136,7 +139,7 @@ export function ReviewsPage() {
         event.preventDefault()
         const delta = event.key === 'j' || event.key === 'ArrowDown' ? 1 : -1
         const next = pullRequests[Math.max(0, Math.min(pullRequests.length - 1, currentIndex + delta))]
-        navigate({ search: { selected: next.id } })
+        navigate({ search: { selected: next.id }, resetScroll: false })
       } else if (event.key.toLowerCase() === 'o' && selectedPR) {
         event.preventDefault()
         window.open(selectedPR.url, '_blank', 'noopener,noreferrer')
@@ -210,7 +213,7 @@ export function ReviewsPage() {
                 className={`card inbox-item ${status ? `review-state-${status.tone}` : ''} ${selectedPR?.id === pr.id ? 'selected' : ''}`}
                 style={{ padding: 20, textAlign: 'left' }}
                 aria-pressed={selectedPR?.id === pr.id}
-                onClick={() => navigate({ search: { selected: pr.id } })}
+                onClick={() => navigate({ search: { selected: pr.id }, resetScroll: false })}
               >
                 <div className="stack" style={{ gap: 6 }}>
                   <div className="split">
@@ -234,7 +237,11 @@ export function ReviewsPage() {
         <div className="card preview-pane">
           {!selectedPR ? <div className="empty">Select a pull request to preview.</div> : (
             <div className="stack" style={{ gap: 16 }}>
-              <div className="space-between" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <div className="stack" style={{ gap: 12 }}>
+                <div className="controls" role="group" aria-label="PR actions" style={{ justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn secondary" style={{ minWidth: 120 }} disabled={!snoozes.canSnooze} onClick={() => snoozes.snooze(selectedPR)}>{snoozes.isSnoozing ? 'Snoozing…' : 'Snooze'}</button>
+                  <a className="btn" href={selectedPR.url} target="_blank" rel="noreferrer">Open in GitHub</a>
+                </div>
                 <div className="stack" style={{ gap: 4 }}>
                   <div className="split small muted">
                     <span>{selectedPR.repository.nameWithOwner} #{selectedPR.number}</span>
@@ -242,10 +249,6 @@ export function ReviewsPage() {
                     <span>Updated {formatDateTime(selectedPR.updatedAt)}</span>
                   </div>
                   <div style={{ fontSize: 24, fontWeight: 800 }}>{selectedPR.title}</div>
-                </div>
-                <div className="controls">
-                  <button type="button" className="btn secondary" disabled={!snoozes.canSnooze} onClick={() => snoozes.snooze(selectedPR)}>{snoozes.isSnoozing ? 'Snoozing…' : 'Snooze'}</button>
-                  <a className="btn" href={selectedPR.url} target="_blank" rel="noreferrer">Open in GitHub</a>
                 </div>
               </div>
               {detailsQuery.isLoading ? <div className="loading">Loading preview…</div> : null}

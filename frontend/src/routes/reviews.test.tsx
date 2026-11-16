@@ -101,6 +101,31 @@ it('snoozes the selected PR across reloads and allows manual restore', async () 
 })
 
 it.each([
+  { selectedNumber: 2, nextNumber: 3, hiddenNumber: 0 },
+  { selectedNumber: 4, nextNumber: 3, hiddenNumber: 0 },
+  { selectedNumber: 2, nextNumber: 4, hiddenNumber: 3 },
+  { selectedNumber: 4, nextNumber: 2, hiddenNumber: 3 },
+])('keeps position after snoozing PR #$selectedNumber (next #$nextNumber, hidden #$hiddenNumber)', async ({ selectedNumber, nextNumber, hiddenNumber }) => {
+  const user = userEvent.setup()
+  const requests = ['First', 'Second', 'Third', 'Fourth'].map((name, index) => ({
+    ...pullRequests[0], id: `pr${index + 1}`, number: index + 1, title: `${name} PR`, url: `https://github.com/octo/repo/pull/${index + 1}`,
+  }))
+  vi.mocked(fetchReviewRequests).mockResolvedValue({ pullRequests: requests, totalCount: requests.length, nextCursor: null })
+  vi.mocked(fetchPullRequestDetails).mockImplementation(async (_token, _owner, _repo, number) => ({
+    ...details(1), id: requests[number - 1].id, number, title: requests[number - 1].title, body: `Body of ${requests[number - 1].title}`,
+  }))
+  if (hiddenNumber) savedSnoozes.set(`viewer:pr${hiddenNumber}`, snoozeRecord(requests[hiddenNumber - 1]))
+  renderReviews()
+  await user.click(await screen.findByRole('button', { name: new RegExp(`octo/repo #${selectedNumber}`) }))
+  expect(await screen.findByText(`Body of ${requests[selectedNumber - 1].title}`)).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Snooze' }))
+  expect(await screen.findByText(`Body of ${requests[nextNumber - 1].title}`)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: new RegExp(`octo/repo #${nextNumber}`) })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('button', { name: new RegExp(`octo/repo #${nextNumber}`) })).toHaveFocus()
+  expect(screen.queryByRole('button', { name: new RegExp(`octo/repo #${selectedNumber}`) })).not.toBeInTheDocument()
+})
+
+it.each([
   { headRefOid: 'head1', authorReplied: true, isClosed: false, event: 'author reply' },
   { headRefOid: 'head2', authorReplied: false, isClosed: false, event: 'new commit' },
 ])('wakes a snoozed PR on $event', async ({ event: _event, ...activity }) => {
