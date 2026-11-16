@@ -181,8 +181,12 @@ it('keeps an in-flight snooze associated with its original account', async () =>
   renderReviews()
   await user.click(await screen.findByRole('button', { name: 'Snooze' }))
   await act(async () => { queryClient.setQueryData(['viewer', 'token'], { id: 'other', login: 'other' }) })
+  await waitFor(() => {
+    expect(screen.queryByText('Your review')).not.toBeInTheDocument()
+    expect(screen.getByText('Body of First PR')).toBeInTheDocument()
+  })
   await act(async () => { finishSave() })
-  expect(await screen.findByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: /octo\/repo #1/ })).toBeInTheDocument())
   expect(savedSnoozes.has('viewer:pr1')).toBe(true)
   expect(savedSnoozes.has('other:pr1')).toBe(false)
 })
