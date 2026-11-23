@@ -1,5 +1,5 @@
-import { buildPullRequestActivity, buildThreadPreview, fetchNotifications, fetchReviewRequests, fetchReviewSnoozeActivity, hasAuthorResponseSince, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, shouldWakeReviewSnooze, sortNotificationThreadsOldestFirst } from './github'
-import type { NotificationThread, PullRequestData, ReviewSnooze } from './types'
+import { fetchInboxSnoozeActivity, hasInboxWakeEventSince, markThreadRead, buildPullRequestActivity, buildThreadPreview, fetchNotifications, fetchReviewRequests, fetchReviewSnoozeActivity, hasAuthorResponseSince, notificationSubjectPayloadToWebUrl, parsePullRequestApiUrl, shouldWakeReviewSnooze, sortNotificationThreadsOldestFirst } from './github'
+import type { InboxSnooze, NotificationThread, PullRequestData, ReviewSnooze } from './types'
 
 describe('parsePullRequestApiUrl', () => {
   it('parses GitHub pull request API URL', () => {
@@ -154,6 +154,87 @@ describe('fetchReviewRequests', () => {
       data: { search: null }, errors: [{ message: 'API rate limit exceeded' }],
     }))))
     await expect(fetchReviewRequests('token')).rejects.toThrow('API rate limit exceeded')
+  })
+})
+
+describe('inbox snooze wake rules', () => {
+  const since = '2026-05-07T10:00:00Z'
+  it.each(['IssueComment', 'ReviewRequestedEvent', 'PullRequestReviewComment'])('wakes on a fresh %s, including comments from any participant', (__typename) => {
+    expect(hasInboxWakeEventSince([{ __typename, createdAt: '2026-05-07T10:00:01Z' }], since)).toBe(true)
+    expect(hasInboxWakeEventSince([{ __typename, createdAt: since }], since)).toBe(false)
+  })
+  it.each(['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED'])('wakes on a published %s review even if created before snoozing', (state) => {
+    const review = { __typename: 'PullRequestReview', state, body: '', createdAt: '2026-05-07T09:00:00Z', submittedAt: '2026-05-07T10:00:01Z' }
+    expect(hasInboxWakeEventSince([review], since)).toBe(true)
+    expect(hasInboxWakeEventSince([{ ...review, submittedAt: null }], since)).toBe(false)
+    expect(hasInboxWakeEventSince([{ ...review, submittedAt: since }], since)).toBe(false)
+  })
+  it.each(["Merge branch 'master' into feature/remove-landing-bigquery-reporter", "Merge branch 'main' into feature/remove_get_dohop_transactions_fo", 'Author adds implementation', 'Teammate pushes implementation'])('ignores commit-only activity: %s', (message) => {
+    const commit = { __typename: 'PullRequestCommit', createdAt: '2026-05-07T10:00:01Z', message }
+    expect(hasInboxWakeEventSince([null, commit], since)).toBe(false)
+  })
+})
+
+describe('fetchInboxSnoozeActivity', () => {
+  const snooze: InboxSnooze = {
+    thread: { id: '1', unread: true, reason: 'review_requested', updatedAt: '2026-05-07T09:00:00Z', subjectType: 'PullRequest', subjectTitle: 'PR', repoFullName: 'octo/repo' },
+    pullRequest: { id: 'pr1', number: 1, title: 'PR', url: 'https://github.com/octo/repo/pull/1', repository: { nameWithOwner: 'octo/repo' } },
+    snoozedAt: '2026-05-07T10:00:00Z',
+  }
+  function page(nodes: unknown[], next: string | null = null): Response {
+    return new Response(JSON.stringify({ data: { node: { timelineItems: { nodes, pageInfo: { hasNextPage: Boolean(next), endCursor: next } } } } }))
+  }
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('finds fresh review requests across timeline pages without querying team membership', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(page([{ __typename: 'ReviewRequestedEvent', createdAt: '2026-05-07T09:00:00Z' }], 'next'))
+      .mockResolvedValueOnce(page([{ __typename: 'ReviewRequestedEvent', createdAt: '2026-05-07T11:00:00Z' }]))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchInboxSnoozeActivity('token', snooze)).toBe(true)
+    const { query, variables } = JSON.parse(String(fetchMock.mock.calls[1][1]?.body))
+    expect(query).toContain('ISSUE_COMMENT, PULL_REQUEST_REVIEW, REVIEW_REQUESTED_EVENT')
+    expect(query).not.toContain('Team')
+    expect(variables).toEqual({ id: 'pr1', since: snooze.snoozedAt, after: 'next' })
+  })
+  it('detects inline replies on old reviews and ignores edits to old comments', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(page([]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ created_at: '2026-05-07T09:00:00Z', updated_at: '2026-05-07T11:00:00Z' }]), { headers: { Link: '<https://api.github.com/repos/octo/repo/pulls/1/comments?page=2>; rel="next"' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ created_at: '2026-05-07T11:00:00Z' }])))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await fetchInboxSnoozeActivity('token', snooze)).toBe(true)
+    expect(new URL(String(fetchMock.mock.calls[2][0])).searchParams.get('page')).toBe('2')
+  })
+  it('leaves quiet PRs snoozed and fails visibly when checking replies fails', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValueOnce(page([])).mockResolvedValueOnce(new Response('[]')))
+    expect(await fetchInboxSnoozeActivity('token', snooze)).toBe(false)
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValueOnce(page([])).mockResolvedValueOnce(new Response('Rate limited', { status: 403 })))
+    await expect(fetchInboxSnoozeActivity('token', snooze)).rejects.toThrow('403')
+  })
+  it('fails for inaccessible PRs instead of silently ending the snooze', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ data: { node: null } }))))
+    await expect(fetchInboxSnoozeActivity('token', snooze)).rejects.toThrow('unavailable')
+  })
+})
+
+describe('recently read notifications', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
+  it('suppresses stale read echoes while allowing genuinely newer notifications through', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-07T10:00:00Z'))
+    const notification = {
+      id: 'read-echo-test', unread: true, reason: 'review_requested', updated_at: '2026-05-07T09:00:00Z', last_read_at: null,
+      repository: { full_name: 'octo/repo', html_url: 'https://github.com/octo/repo' },
+      subject: { type: 'PullRequest', title: 'PR', url: 'https://api.github.com/repos/octo/repo/pulls/1', latest_comment_url: null },
+    }
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 205 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([notification])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ ...notification, updated_at: '2026-05-07T10:00:01Z' }]))))
+    await markThreadRead('token', notification.id)
+    expect((await fetchNotifications('token', 'unread')).threads).toEqual([])
+    expect((await fetchNotifications('token', 'unread')).threads.map((thread) => thread.id)).toEqual([notification.id])
   })
 })
 

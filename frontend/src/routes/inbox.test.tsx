@@ -3,13 +3,14 @@ import { RouterProvider } from '@tanstack/react-router'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppProvider } from '../lib/app-context'
-import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, markThreadRead, submitPullRequestReview } from '../lib/github'
-import type { InboxSnapshot, NotificationThread, PullRequestData } from '../lib/types'
+import { buildThreadPreview, fetchInboxSnoozeActivity, fetchNotifications, fetchPullRequestDetails, fetchViewer, markThreadRead, submitPullRequestReview } from '../lib/github'
+import { deleteInboxSnooze, loadInboxSnoozes, saveInboxSnooze, wakeInboxSnooze } from '../lib/storage'
+import type { InboxSnapshot, InboxSnooze, NotificationThread, PullRequestData } from '../lib/types'
 import { buildRouter } from '../router'
 
 vi.mock('../lib/github', async (importOriginal) => ({
   ...await importOriginal<typeof import('../lib/github')>(),
-  fetchNotifications: vi.fn(), fetchViewer: vi.fn(), fetchPullRequestDetails: vi.fn(),
+  fetchNotifications: vi.fn(), fetchViewer: vi.fn(), fetchPullRequestDetails: vi.fn(), fetchInboxSnoozeActivity: vi.fn(),
   markThreadRead: vi.fn(), submitPullRequestReview: vi.fn(),
 }))
 vi.mock('../lib/storage', async (importOriginal) => ({
@@ -19,6 +20,7 @@ vi.mock('../lib/storage', async (importOriginal) => ({
   loadInboxSnapshot: vi.fn().mockResolvedValue(undefined),
   loadPreviewSnapshot: vi.fn().mockResolvedValue(undefined),
   clearPreviewCaches: vi.fn().mockResolvedValue(undefined),
+  loadInboxSnoozes: vi.fn(), saveInboxSnooze: vi.fn(), deleteInboxSnooze: vi.fn(), wakeInboxSnooze: vi.fn(),
 }))
 
 const threads: NotificationThread[] = ['First', 'Second'].map((name: string, index: number) => ({
@@ -34,6 +36,10 @@ const pr: PullRequestData = {
   comments: { totalCount: 0, nodes: [] }, files: { nodes: [] }, changedFiles: 1, additions: 30, deletions: 0,
 }
 let queryClient: QueryClient
+const savedSnoozes = new Map<string, InboxSnooze>()
+function snoozeRecord(thread: NotificationThread = threads[0]): InboxSnooze {
+  return { thread, pullRequest: { ...pr, id: `pr${thread.id}`, number: Number(thread.id) }, snoozedAt: new Date().toISOString() }
+}
 
 function renderInbox(token: string = 'token', pullRequest: PullRequestData = pr, inboxThreads: NotificationThread[] = threads): void {
   sessionStorage.setItem('github-token', token)
@@ -53,6 +59,18 @@ beforeEach(() => {
   window.history.replaceState({}, '', '/#/')
   vi.clearAllMocks()
   vi.stubGlobal('scrollTo', vi.fn())
+  savedSnoozes.clear()
+  vi.mocked(loadInboxSnoozes).mockImplementation(async (viewerId) => [...savedSnoozes.entries()].filter(([key]) => key.startsWith(`${viewerId}:`)).map(([, value]) => value))
+  vi.mocked(saveInboxSnooze).mockImplementation(async (viewerId, snooze) => { savedSnoozes.set(`${viewerId}:${snooze.thread.id}`, snooze) })
+  vi.mocked(deleteInboxSnooze).mockImplementation(async (viewerId, snooze) => {
+    const key = `${viewerId}:${snooze.thread.id}`
+    if (savedSnoozes.get(key)?.snoozedAt === snooze.snoozedAt) savedSnoozes.delete(key)
+  })
+  vi.mocked(wakeInboxSnooze).mockImplementation(async (viewerId, snooze) => {
+    const key = `${viewerId}:${snooze.thread.id}`
+    if (savedSnoozes.get(key)?.snoozedAt === snooze.snoozedAt) savedSnoozes.set(key, { ...snooze, restoredAt: new Date().toISOString() })
+  })
+  vi.mocked(fetchInboxSnoozeActivity).mockResolvedValue(false)
   vi.mocked(fetchViewer).mockResolvedValue({ id: 'viewer', login: 'viewer' })
   vi.mocked(fetchNotifications).mockResolvedValue({ threads, pagesLoaded: 1, nextPage: 2 })
   vi.mocked(fetchPullRequestDetails).mockResolvedValue(pr)
@@ -281,6 +299,170 @@ it('restores failed mark-read, explains failure, and retries original thread', a
   await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
   expect(markThreadRead).toHaveBeenLastCalledWith('token', '1')
   expect(screen.getByText('1 loaded')).toBeInTheDocument()
+})
+
+it.each([1, 2])('marks read and snoozes PR #%s, retaining nearby selection across refresh and reload', async (number) => {
+  const user = userEvent.setup()
+  renderInbox()
+  await user.click(await screen.findByRole('button', { name: new RegExp(`octo/repo.*${number === 1 ? 'First' : 'Second'} PR`) }))
+  await user.click(await screen.findByRole('button', { name: 'Mark read and Snooze' }))
+  await screen.findByText('Snoozed (1)')
+  const title = number === 1 ? 'First PR' : 'Second PR'
+  const remaining = number === 1 ? 'Second PR' : 'First PR'
+  expect(markThreadRead).toHaveBeenCalledWith('token', String(number))
+  expect(screen.queryByRole('button', { name: new RegExp(`octo/repo.*${title}`) })).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: new RegExp(`octo/repo.*${remaining}`) })).toHaveClass('selected'))
+  await user.click(screen.getByRole('button', { name: 'Refresh Inbox' }))
+  await waitFor(() => expect(fetchInboxSnoozeActivity).toHaveBeenCalled())
+  expect(screen.queryByRole('button', { name: new RegExp(`octo/repo.*${title}`) })).not.toBeInTheDocument()
+  cleanup()
+  queryClient.clear()
+  renderInbox()
+  await screen.findByText('Snoozed (1)')
+  expect(screen.queryByRole('button', { name: new RegExp(`octo/repo.*${title}`) })).not.toBeInTheDocument()
+  await user.click(screen.getByText('Snoozed (1)'))
+  await user.click(screen.getByRole('button', { name: `Restore ${title}` }))
+  expect(await screen.findByRole('button', { name: new RegExp(`octo/repo.*${title}`) })).toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it('keeps an existing review_requested notification hidden until fresh eligible activity', async () => {
+  const user = userEvent.setup()
+  savedSnoozes.set('viewer:1', snoozeRecord())
+  renderInbox()
+  await screen.findByText('Snoozed (1)')
+  await user.click(screen.getByRole('button', { name: 'Refresh Inbox' }))
+  await waitFor(() => expect(fetchInboxSnoozeActivity).toHaveBeenCalled())
+  expect(screen.queryByRole('button', { name: /octo\/repo.*First PR/ })).not.toBeInTheDocument()
+  vi.mocked(fetchInboxSnoozeActivity).mockResolvedValue(true)
+  await user.click(screen.getByRole('button', { name: 'Refresh Inbox' }))
+  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+  expect(savedSnoozes.get('viewer:1')?.restoredAt).toBeTruthy()
+})
+
+it('checks snoozed PRs outside loaded notification pages and preserves snoozes on check failure', async () => {
+  const user = userEvent.setup()
+  const outside = { ...threads[0], id: '99', subjectTitle: 'Outside pages' }
+  savedSnoozes.set('viewer:99', snoozeRecord(outside))
+  vi.mocked(fetchInboxSnoozeActivity).mockRejectedValue(new Error('Rate limited'))
+  renderInbox()
+  await screen.findByText('Snoozed (1)')
+  await user.click(screen.getByRole('button', { name: 'Refresh Inbox' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('octo/repo #99')
+  expect(screen.getByRole('alert')).toHaveTextContent('Rate limited')
+  expect(savedSnoozes.size).toBe(1)
+  await user.click(screen.getByText('Snoozed (1)'))
+  expect(screen.getByRole('link', { name: /Outside pages/ })).toHaveAttribute('href', pr.url)
+  await user.click(screen.getByRole('button', { name: 'Restore Outside pages' }))
+  await waitFor(() => expect(screen.queryByText('Snoozed (1)')).not.toBeInTheDocument())
+})
+
+it.each(['mark', 'save'])('handles %s failure without claiming a successful snooze', async (step) => {
+  const user = userEvent.setup()
+  if (step === 'mark') vi.mocked(markThreadRead).mockRejectedValueOnce(new Error('Network unavailable'))
+  else vi.mocked(saveInboxSnooze).mockRejectedValueOnce(new Error('Storage unavailable'))
+  renderInbox()
+  await user.click(await screen.findByRole('button', { name: 'Mark read and Snooze' }))
+  const alert = await screen.findByRole('alert')
+  expect(alert).toHaveTextContent(step === 'mark' ? 'Network unavailable' : 'Marked read on GitHub, but could not save snooze')
+  expect(screen.queryByText('Snoozed (1)')).not.toBeInTheDocument()
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it('surfaces eligible activity even while GitHub keeps the notification read, persists the wake, and clears it on mark-read', async () => {
+  const user = userEvent.setup()
+  savedSnoozes.set('viewer:1', snoozeRecord())
+  vi.mocked(fetchInboxSnoozeActivity).mockResolvedValue(true)
+  vi.mocked(fetchNotifications).mockResolvedValue({ threads: [threads[1]], pagesLoaded: 1, nextPage: null })
+  renderInbox('token', pr, [threads[1]])
+  await screen.findByText('Snoozed (1)')
+  await user.click(screen.getByRole('button', { name: 'Refresh Inbox' }))
+  const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  expect(within(card).getByText('Woken locally')).toBeInTheDocument()
+  expect(within(card).getByLabelText('Unread')).toBeInTheDocument()
+  cleanup()
+  queryClient.clear()
+  renderInbox('token', pr, [threads[1]])
+  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Mark First PR as read' }))
+  await waitFor(() => expect(screen.queryByRole('button', { name: /octo\/repo.*First PR/ })).not.toBeInTheDocument())
+  expect(savedSnoozes.size).toBe(0)
+})
+
+it('keeps newer GitHub activity timestamps and ordering after a local wake', async () => {
+  const restoredAt = '2026-05-07T10:00:00Z'
+  const newer = '2026-05-07T11:00:00Z'
+  savedSnoozes.set('viewer:1', { ...snoozeRecord(), restoredAt })
+  const initial = [{ ...threads[0], updatedAt: '2026-05-07T09:00:00Z' }, { ...threads[1], updatedAt: '2026-05-07T10:30:00Z' }]
+  renderInbox('token', pr, initial)
+  const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
+  expect(card.querySelector('time')).toHaveAttribute('dateTime', restoredAt)
+  await act(async () => { queryClient.setQueryData<InboxSnapshot>(['notifications', 'token', 'unread'], (old) => old && ({ ...old, threads: [{ ...initial[0], updatedAt: newer }, initial[1]] })) })
+  await waitFor(() => expect(card.querySelector('time')).toHaveAttribute('dateTime', newer))
+  const cards = screen.getAllByRole('button', { name: /octo\/repo.*PR/ })
+  expect(cards[0]).toHaveTextContent('Second PR')
+  expect(cards[1]).toHaveTextContent('First PR')
+})
+
+it('respects the 120-second automatic snooze check minimum while allowing manual checks', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  try {
+    localStorage.setItem('preferences', JSON.stringify({ autoRefreshSeconds: 30 }))
+    savedSnoozes.set('viewer:1', snoozeRecord())
+    renderInbox()
+    await screen.findByText('Snoozed (1)')
+    await act(async () => { vi.advanceTimersByTime(30_000) })
+    await waitFor(() => expect(fetchNotifications).toHaveBeenCalled())
+    expect(fetchInboxSnoozeActivity).not.toHaveBeenCalled()
+    await act(async () => { vi.advanceTimersByTime(90_000) })
+    await waitFor(() => expect(fetchInboxSnoozeActivity).toHaveBeenCalledTimes(1))
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Refresh Inbox' }))
+    await waitFor(() => expect(fetchInboxSnoozeActivity).toHaveBeenCalledTimes(2))
+  } finally { vi.useRealTimers() }
+})
+
+it('keeps an in-flight snooze associated with its original account and preserves new account selection', async () => {
+  const user = userEvent.setup()
+  let finishRead!: () => void
+  vi.mocked(markThreadRead).mockImplementationOnce(() => new Promise<void>((resolve) => { finishRead = resolve }))
+  renderInbox()
+  await user.click(await screen.findByRole('button', { name: 'Mark read and Snooze' }))
+  await act(async () => { queryClient.setQueryData(['viewer', 'token'], { id: 'other', login: 'other' }) })
+  await waitFor(() => expect(loadInboxSnoozes).toHaveBeenCalledWith('other'))
+  await waitFor(() => expect(screen.getByRole('button', { name: /octo\/repo.*First PR/ })).toHaveClass('selected'))
+  await act(async () => { finishRead() })
+  await waitFor(() => expect(savedSnoozes.has('viewer:1')).toBe(true))
+  expect(savedSnoozes.has('other:1')).toBe(false)
+  expect(screen.getByRole('button', { name: /octo\/repo.*First PR/ })).toHaveClass('selected')
+})
+
+it('keeps failed restores recoverable and excludes every snoozed PR from keyboard selection', async () => {
+  const user = userEvent.setup()
+  for (const thread of threads) savedSnoozes.set(`viewer:${thread.id}`, snoozeRecord(thread))
+  vi.mocked(deleteInboxSnooze).mockRejectedValueOnce(new Error('Storage unavailable'))
+  renderInbox()
+  await screen.findByText('Snoozed (2)')
+  await user.keyboard('jko')
+  expect(screen.queryByRole('group', { name: 'Inbox actions' })).not.toBeInTheDocument()
+  await user.click(screen.getByText('Snoozed (2)'))
+  await user.click(screen.getByRole('button', { name: 'Restore First PR' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not restore inbox thread')
+  expect(savedSnoozes.size).toBe(2)
+  await user.click(screen.getByRole('button', { name: 'Restore First PR' }))
+  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+})
+
+it('isolates snoozes by account and disables new snoozes after a storage read failure', async () => {
+  savedSnoozes.set('other-viewer:1', snoozeRecord())
+  renderInbox()
+  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: 'Mark read and Snooze' })).toBeEnabled()
+  cleanup()
+  queryClient.clear()
+  vi.mocked(loadInboxSnoozes).mockRejectedValueOnce(new Error('Storage unavailable'))
+  renderInbox()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not load inbox snoozes')
+  expect(screen.getByRole('button', { name: 'Mark read and Snooze' })).toBeDisabled()
 })
 
 it('loads more and preserves loaded page count on refresh', async () => {

@@ -1,5 +1,5 @@
 import { hasGitHubMarkReadProxy, proxyMarkThreadRead } from './github-auth'
-import type { NotificationThread, NotificationsPage, PRFile, PullRequestActivity, PullRequestData, RequestedPullRequest, ReviewRequestsPage, ReviewResponse, ReviewSnooze, ReviewSnoozeActivity, ThreadPreview, Viewer } from './types'
+import type { InboxSnooze, InboxWakeEvent, NotificationThread, NotificationsPage, PRFile, PullRequestActivity, PullRequestData, RequestedPullRequest, ReviewRequestsPage, ReviewResponse, ReviewSnooze, ReviewSnoozeActivity, ThreadPreview, Viewer } from './types'
 
 const GITHUB_API_URL = 'https://api.github.com'
 const GITHUB_GRAPHQL_URL = 'https://api.github.com/graphql'
@@ -28,10 +28,10 @@ function rememberRecentlyReadThread(threadId: string) {
   recentlyReadThreads.set(threadId, Date.now() + RECENTLY_READ_TTL_MS)
 }
 
-function isRecentlyReadThread(threadId: string): boolean {
+function isRecentlyReadThread(threadId: string, updatedAt: string): boolean {
   pruneRecentlyReadThreads()
   const expiresAt = recentlyReadThreads.get(threadId)
-  return typeof expiresAt === 'number' && expiresAt > Date.now()
+  return typeof expiresAt === 'number' && expiresAt > Date.now() && new Date(updatedAt).getTime() <= expiresAt - RECENTLY_READ_TTL_MS
 }
 
 async function fetchResponse(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -242,6 +242,58 @@ export async function fetchReviewSnoozeActivity(token: string, pullRequestId: st
   throw new Error('Incomplete snoozed review activity')
 }
 
+export function hasInboxWakeEventSince(events: ReadonlyArray<InboxWakeEvent | null>, since: string): boolean {
+  return events.some((event) => {
+    if (!event) return false
+    const timestamp = event.__typename === 'PullRequestReview' ? event.submittedAt :
+      ['IssueComment', 'ReviewRequestedEvent', 'PullRequestReviewComment'].includes(event.__typename) ? event.createdAt : null
+    return Boolean(timestamp && new Date(timestamp).getTime() > new Date(since).getTime())
+  })
+}
+
+export async function fetchInboxSnoozeActivity(token: string, snooze: InboxSnooze): Promise<boolean> {
+  const query = `
+    query($id: ID!, $since: DateTime!, $after: String) {
+      node(id: $id) {
+        ... on PullRequest {
+          timelineItems(first: 100, after: $after, since: $since, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW, REVIEW_REQUESTED_EVENT]) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              __typename
+              ... on IssueComment { createdAt }
+              ... on PullRequestReview { submittedAt }
+              ... on ReviewRequestedEvent { createdAt }
+            }
+          }
+        }
+      }
+    }
+  `
+  type ActivityPage = { node: { timelineItems: { nodes: Array<InboxWakeEvent | null>; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } | null }
+  let after: string | null = null
+  do {
+    const data: ActivityPage = await fetchGraphQL<ActivityPage>(token, query, { id: snooze.pullRequest.id, since: snooze.snoozedAt, after })
+    if (!data.node) throw new Error('Snoozed pull request is unavailable')
+    const { nodes, pageInfo } = data.node.timelineItems
+    if (hasInboxWakeEventSince(nodes, snooze.snoozedAt)) return true
+    if (!pageInfo.hasNextPage) break
+    if (!pageInfo.endCursor || pageInfo.endCursor === after) throw new Error('Missing snoozed inbox activity cursor')
+    after = pageInfo.endCursor
+  } while (after)
+
+  // Replies on an already submitted review have their own creation time.
+  const url = new URL(`${GITHUB_API_URL}/repos/${snooze.pullRequest.repository.nameWithOwner}/pulls/${snooze.pullRequest.number}/comments`)
+  url.searchParams.set('since', snooze.snoozedAt)
+  url.searchParams.set('per_page', '100')
+  for (let page = 1; ; page += 1) {
+    url.searchParams.set('page', String(page))
+    const response = await fetchResponse(url, { headers: authHeaders(token) })
+    const comments: Array<{ created_at: string }> = await response.json()
+    if (hasInboxWakeEventSince(comments.map((comment) => ({ __typename: 'PullRequestReviewComment', createdAt: comment.created_at })), snooze.snoozedAt)) return true
+    if (!/<[^>]+>;\s*rel="next"/.test(response.headers.get('Link') ?? '')) return false
+  }
+}
+
 export function sortNotificationThreadsOldestFirst(threads: NotificationThread[]): NotificationThread[] {
   return [...threads].sort((a, b) => {
     const byUpdatedAt = new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()
@@ -276,7 +328,7 @@ export async function fetchNotifications(token: string, show: 'unread' | 'all', 
     nextPage = /<[^>]+>;\s*rel="next"/.test(response.headers.get('Link') ?? '') ? pagesLoaded + 1 : null
 
     for (const thread of data) {
-      const recentlyRead = isRecentlyReadThread(thread.id)
+      const recentlyRead = isRecentlyReadThread(thread.id, thread.updated_at)
       if (show === 'unread' && recentlyRead) continue
       threads.set(thread.id, {
         id: thread.id,

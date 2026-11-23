@@ -3,14 +3,16 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
+import { useInboxSnoozes } from '../lib/use-inbox-snoozes'
 import { GitHubTokenControls } from '../components/github-token-controls'
 import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview, PullRequestStateBadge } from '../components/pull-request-preview'
-import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, latestReviewAuthors, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl } from '../lib/github'
+import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, latestReviewAuthors, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, sortNotificationThreadsOldestFirst } from '../lib/github'
 import { formatDateTime, formatRelativeTime, formatStaleness } from '../lib/format'
-import { clearPreviewCaches, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
-import type { InboxShow, InboxSnapshot, NotificationThread, PullRequestData, ReviewDraft, ThreadPreview } from '../lib/types'
+import { clearPreviewCaches, deleteInboxSnooze, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
+import type { InboxShow, InboxSnapshot, InboxSnooze, NotificationThread, PullRequestData, ReviewDraft, ThreadPreview } from '../lib/types'
 
 const PREVIEW_CACHE_TTL_MS = 60_000
+type MarkReadRequest = { thread: NotificationThread; token: string; show: InboxShow; viewerId?: string; restored?: InboxSnooze }
 
 async function fetchInboxSnapshot(token: string, show: InboxShow, pages: number): Promise<InboxSnapshot> {
   const page = await fetchNotifications(token, show, pages)
@@ -160,7 +162,27 @@ export function InboxPage() {
     },
   })
 
-  const threads = notificationsQuery.data?.threads ?? []
+  const snoozes = useInboxSnoozes(token, viewerQuery.data, preferences.autoRefreshSeconds, (threadId) => {
+    if (selectedThread?.id !== threadId) return
+    const index = threads.findIndex((thread) => thread.id === threadId)
+    const next = threads[index + 1] ?? threads[index - 1]
+    navigate({ search: (prev) => ({ ...prev, selected: next?.id ?? '' }), replace: true, resetScroll: false })
+  })
+  const isInitializingSnoozes = Boolean(token && ((!viewerQuery.isSuccess && !viewerQuery.isError) || snoozes.isLoading))
+  const loadedThreads = useMemo(() => {
+    const merged = new Map((notificationsQuery.data?.threads ?? []).map((thread) => [thread.id, thread]))
+    // Own comments and reviews can wake a PR while GitHub keeps its notification read.
+    for (const record of snoozes.restored) {
+      const thread = merged.get(record.thread.id) ?? record.thread
+      const updatedAt = new Date(thread.updatedAt) > new Date(record.restoredAt) ? thread.updatedAt : record.restoredAt
+      merged.set(thread.id, { ...thread, unread: true, lastReadAt: record.snoozedAt, updatedAt })
+    }
+    return sortNotificationThreadsOldestFirst([...merged.values()])
+  }, [notificationsQuery.data?.threads, snoozes.restored])
+  const threads = useMemo(() => {
+    const hiddenIds = new Set(snoozes.snoozes.map((snooze) => snooze.thread.id))
+    return isInitializingSnoozes ? [] : loadedThreads.filter((thread) => !hiddenIds.has(thread.id))
+  }, [isInitializingSnoozes, loadedThreads, snoozes.snoozes])
   const inboxSignature = useMemo(() => threads.map((thread) => `${thread.id}:${thread.updatedAt}:${thread.unread ? 'u' : 'r'}`).join('|'), [threads])
 
   useEffect(() => {
@@ -173,14 +195,15 @@ export function InboxPage() {
   }, [threads])
 
   useEffect(() => {
+    if (isInitializingSnoozes) return
     if (!threads.length) {
-      if (selected) navigate({ search: (prev) => ({ ...prev, selected: '' }), replace: true })
+      if (selected) navigate({ search: (prev) => ({ ...prev, selected: '' }), replace: true, resetScroll: false })
       return
     }
     if (!selected || !threads.some((thread) => thread.id === selected)) {
-      navigate({ search: (prev) => ({ ...prev, selected: threads[0].id }), replace: true })
+      navigate({ search: (prev) => ({ ...prev, selected: threads[0].id }), replace: true, resetScroll: false })
     }
-  }, [navigate, selected, threads])
+  }, [isInitializingSnoozes, navigate, selected, threads])
 
   const selectedThread = useMemo(() => threads.find((thread) => thread.id === selected) ?? threads[0], [selected, threads])
 
@@ -230,50 +253,60 @@ export function InboxPage() {
     },
   })
 
-  const runRefresh = () => {
-    if (refreshMutation.isPending || notificationsQuery.isFetching) return
+  const runRefresh = (manual = false) => {
+    if (refreshMutation.isPending || notificationsQuery.isFetching || snoozes.isSnoozing) return
+    if (manual) {
+      snoozes.refresh()
+      if (viewerQuery.isError) void viewerQuery.refetch()
+    }
     refreshMutation.mutate()
   }
 
   const markReadMutation = useMutation({
-    mutationFn: async (thread: NotificationThread) => {
-      await markThreadRead(token, thread.id)
+    mutationFn: async ({ thread, token: accountToken, viewerId, restored }: MarkReadRequest) => {
+      await markThreadRead(accountToken, thread.id)
+      if (viewerId && restored) {
+        await deleteInboxSnooze(viewerId, restored)
+        await queryClient.invalidateQueries({ queryKey: ['inbox-snoozes', viewerId] })
+      }
       await clearPreviewCaches()
       return thread
     },
-    onMutate: async (thread) => {
-      await queryClient.cancelQueries({ queryKey: ['notifications', token] })
-      const previous = queryClient.getQueryData<InboxSnapshot>(['notifications', token, show])
+    onMutate: async ({ thread, token: accountToken, show: accountShow }) => {
+      await queryClient.cancelQueries({ queryKey: ['notifications', accountToken] })
+      const previous = queryClient.getQueryData<InboxSnapshot>(['notifications', accountToken, accountShow])
 
       if (previous) {
-        const currentIndex = previous.threads.findIndex((item) => item.id === thread.id)
-        const nextThreads = show === 'unread'
+        const currentIndex = threads.findIndex((item) => item.id === thread.id)
+        const visibleAfterRead = accountShow === 'unread' ? threads.filter((item) => item.id !== thread.id) : threads
+        const nextThreads = accountShow === 'unread'
           ? previous.threads.filter((item) => item.id !== thread.id)
           : previous.threads.map((item) => item.id === thread.id ? { ...item, unread: false, lastReadAt: new Date().toISOString() } : item)
         const next = { ...previous, threads: nextThreads, savedAt: new Date().toISOString() }
-        queryClient.setQueryData(['notifications', token, show], next)
+        queryClient.setQueryData(['notifications', accountToken, accountShow], next)
         void saveInboxSnapshot(next)
 
         if (selected === thread.id) {
-          const fallback = nextThreads[Math.min(currentIndex, Math.max(0, nextThreads.length - 1))]
-          navigate({ search: (prev) => ({ ...prev, selected: fallback?.id ?? '' }), replace: true })
+          const fallback = visibleAfterRead[Math.min(currentIndex, Math.max(0, visibleAfterRead.length - 1))]
+          navigate({ search: (prev) => ({ ...prev, selected: fallback?.id ?? '' }), replace: true, resetScroll: false })
         }
       }
 
       return { previous }
     },
-    onError: async (_error, _thread, context) => {
+    onError: async (_error, { token: accountToken, show: accountShow }, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(['notifications', token, show], context.previous)
+        queryClient.setQueryData(['notifications', accountToken, accountShow], context.previous)
         await saveInboxSnapshot(context.previous)
       }
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, { token: accountToken }) => {
       window.setTimeout(() => {
-        void queryClient.invalidateQueries({ queryKey: ['notifications', token] })
+        void queryClient.invalidateQueries({ queryKey: ['notifications', accountToken] })
       }, 5000)
     },
   })
+  const markRead = (thread: NotificationThread) => markReadMutation.mutate({ thread, token, show, viewerId: viewerQuery.data?.id, restored: snoozes.restored.find((record) => record.thread.id === thread.id) })
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -292,7 +325,7 @@ export function InboxPage() {
       runRefresh()
     }, Math.max(preferences.autoRefreshSeconds, 30) * 1000)
     return () => window.clearInterval(timer)
-  }, [notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds, notificationsQuery.isFetching, refreshMutation.isPending, token])
+  }, [notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds, notificationsQuery.isFetching, refreshMutation.isPending, snoozes.isSnoozing, token])
 
   useEffect(() => {
     if (!selectedThread) return
@@ -322,7 +355,7 @@ export function InboxPage() {
       window.removeEventListener('focus', onVisibilityOrFocus)
       document.removeEventListener('visibilitychange', onVisibilityOrFocus)
     }
-  }, [inboxSignature, selectedThread?.id, notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds, notificationsQuery.isFetching, refreshMutation.isPending, token])
+  }, [inboxSignature, selectedThread?.id, notificationsQuery.data?.savedAt, preferences.autoRefreshSeconds, notificationsQuery.isFetching, refreshMutation.isPending, snoozes.isSnoozing, token])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -333,7 +366,7 @@ export function InboxPage() {
       const move = (delta: number) => {
         const nextIndex = Math.max(0, Math.min(threads.length - 1, (currentIndex === -1 ? 0 : currentIndex) + delta))
         const next = threads[nextIndex]
-        navigate({ search: (prev) => ({ ...prev, selected: next.id }) })
+        navigate({ search: (prev) => ({ ...prev, selected: next.id }), resetScroll: false })
       }
 
       if ((event.key === 'j' || event.key === 'ArrowDown') && threads.length) {
@@ -348,18 +381,18 @@ export function InboxPage() {
         if (url) window.open(url, '_blank', 'noopener,noreferrer')
       } else if ((event.key === 'm' || event.key === 'M') && threads.length) {
         event.preventDefault()
-        if (selectedThread?.unread && !markReadMutation.isPending && !notificationsQuery.isFetching) {
-          markReadMutation.mutate(selectedThread)
+        if (selectedThread?.unread && !markReadMutation.isPending && !snoozes.isSnoozing && !notificationsQuery.isFetching) {
+          markRead(selectedThread)
         }
       } else if (event.key === 'r' || event.key === 'R' || event.code === 'KeyR') {
         event.preventDefault()
-        runRefresh()
+        runRefresh(true)
       }
     }
 
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [markReadMutation, navigate, notificationsQuery.isFetching, previewQuery.data, refreshMutation, selectedThread, threads])
+  }, [markReadMutation, navigate, notificationsQuery.isFetching, previewQuery.data, refreshMutation, selectedThread, snoozes.isSnoozing, threads])
 
   useEffect(() => {
     if (!notificationsQuery.dataUpdatedAt || !inboxSignature) return
@@ -396,7 +429,7 @@ export function InboxPage() {
           </div>
         </div>
         <div className="controls">
-          <button className="btn success" onClick={runRefresh} disabled={refreshMutation.isPending || notificationsQuery.isFetching}>Refresh Inbox</button>
+          <button className="btn success" onClick={() => runRefresh(true)} disabled={refreshMutation.isPending || notificationsQuery.isFetching || snoozes.isSnoozing}>Refresh Inbox</button>
         </div>
       </div>
 
@@ -414,17 +447,34 @@ export function InboxPage() {
 
       {notificationsQuery.isError ? <div className="error">{notificationsQuery.error instanceof Error ? notificationsQuery.error.message : 'Failed to load notifications'}</div> : null}
 
+      {viewerQuery.isError ? <div className="notice" role="status">Could not identify your account. Inbox snoozing is unavailable. Refresh Inbox to retry.</div> : null}
+      {snoozes.error ? <div className="error" role="alert">{snoozes.error}</div> : null}
+      {snoozes.snoozes.length ? (
+        <details className="card" style={{ padding: 16 }}>
+          <summary>Snoozed ({snoozes.snoozes.length})</summary>
+          <p className="small muted">Hidden locally until a new comment, submitted review, or review request. Commit-only updates stay hidden, including main/master merges. Checked every {snoozes.checkIntervalSeconds}s while Inbox is open. Auto-woken PRs stay locally unread until marked read. Restore ends snoozing; GitHub read status stays unchanged.</p>
+          <div className="stack">
+            {snoozes.snoozes.map((snooze) => (
+              <div key={snooze.thread.id} className="space-between">
+                <a href={snooze.pullRequest.url} target="_blank" rel="noreferrer">{snooze.thread.repoFullName} #{snooze.pullRequest.number} · {snooze.thread.subjectTitle}</a>
+                <button type="button" className="btn secondary" disabled={snoozes.isRestoring} aria-label={`Restore ${snooze.thread.subjectTitle}`} onClick={() => snoozes.restore(snooze)}>Restore</button>
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+
       {markReadMutation.isError ? (
         <div className="error controls" role="alert">
-          <span>Could not mark “{markReadMutation.variables?.subjectTitle}” as read. {markReadMutation.error.message}</span>
+          <span>Could not mark “{markReadMutation.variables?.thread.subjectTitle}” as read. {markReadMutation.error.message}</span>
           <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching} onClick={() => { if (markReadMutation.variables) markReadMutation.mutate(markReadMutation.variables) }}>Retry</button>
         </div>
       ) : null}
 
       <div className="grid-main">
         <div className="inbox-list">
-          {notificationsQuery.isLoading ? <div className="card empty loading">Loading inbox…</div> : null}
-          {!notificationsQuery.isLoading && !threads.length ? <div className="card empty">No inbox threads found.</div> : null}
+          {notificationsQuery.isLoading || isInitializingSnoozes ? <div className="card empty loading">Loading inbox…</div> : null}
+          {!notificationsQuery.isLoading && !isInitializingSnoozes && !threads.length ? <div className="card empty">No inbox threads found.</div> : null}
           {threads.map((thread) => {
             const prefetchedPreview = previewByThreadId.get(thread.id)
             const pr = prefetchedPreview?.pullRequest
@@ -443,7 +493,7 @@ export function InboxPage() {
                   onClick={() => {
                     if (selectedThread?.id === thread.id) return
                     startTransition(() => {
-                      navigate({ search: (prev) => ({ ...prev, selected: thread.id }) })
+                      navigate({ search: (prev) => ({ ...prev, selected: thread.id }), resetScroll: false })
                     })
                   }}
                 >
@@ -451,6 +501,7 @@ export function InboxPage() {
                     <div className="split">
                       {thread.subjectType === 'PullRequest' ? <span className={prStateIconClass(pr)} title={prStateIconLabel(pr)} aria-label={prStateIconLabel(pr)} /> : null}
                       <span style={{ fontSize: 14, fontWeight: 700 }}>{thread.repoFullName}</span>
+                      {snoozes.restored.some((record) => record.thread.id === thread.id) ? <span className="badge blue">Woken locally</span> : null}
                       {thread.unread ? <span className="unread-dot" role="img" aria-label="Unread" title="Unread" /> : null}
                       <span className={`badge ${reasonTone}`}>{thread.reason === 'subscribed' ? 'Watching / subscribed' : formatBadgeText(thread.reason)}</span>
                       {isClosed ? <span className="badge red">Closed</span> : isDraft ? <span className="badge gray">Draft</span> : pr?.state.toUpperCase() === 'OPEN' ? <span className="badge green">Open</span> : null}
@@ -465,8 +516,8 @@ export function InboxPage() {
                   <button
                     type="button"
                     className="btn mark-read-btn"
-                    onClick={() => markReadMutation.mutate(thread)}
-                    disabled={markReadMutation.isPending || notificationsQuery.isFetching}
+                    onClick={() => markRead(thread)}
+                    disabled={markReadMutation.isPending || snoozes.isSnoozing || notificationsQuery.isFetching}
                     aria-label={`Mark ${thread.subjectTitle} as read`}
                     title="Mark read"
                   >
@@ -477,7 +528,7 @@ export function InboxPage() {
             )
           })}
           {notificationsQuery.data?.nextPage ? (
-            <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching || markReadMutation.isPending || loadMoreMutation.isPending} onClick={() => loadMoreMutation.mutate()}>
+            <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching || markReadMutation.isPending || snoozes.isSnoozing || loadMoreMutation.isPending} onClick={() => loadMoreMutation.mutate()}>
               {loadMoreMutation.isPending ? 'Loading…' : 'Load more'}
             </button>
           ) : null}
@@ -495,8 +546,11 @@ export function InboxPage() {
               viewerLogin={viewerQuery.data?.login}
               isLoading={previewQuery.isLoading}
               error={previewQuery.error instanceof Error ? previewQuery.error.message : ''}
-              onMarkRead={() => markReadMutation.mutate(selectedThread)}
+              onMarkRead={() => markRead(selectedThread)}
               markingRead={markReadMutation.isPending}
+              onSnooze={() => { if (previewQuery.data?.pullRequest) snoozes.snooze(selectedThread, previewQuery.data.pullRequest) }}
+              canSnooze={snoozes.canSnooze && !markReadMutation.isPending}
+              snoozing={snoozes.isSnoozing}
               syncing={notificationsQuery.isFetching}
             />
           ) : null}
@@ -514,6 +568,9 @@ function PreviewSection({
   error,
   onMarkRead,
   markingRead,
+  onSnooze,
+  canSnooze,
+  snoozing,
   syncing,
   reviewDraft,
   onReviewDraftChange,
@@ -525,6 +582,9 @@ function PreviewSection({
   error: string
   onMarkRead: () => void
   markingRead: boolean
+  onSnooze: () => void
+  canSnooze: boolean
+  snoozing: boolean
   syncing: boolean
   reviewDraft: ReviewDraft
   onReviewDraftChange: (draft: ReviewDraft) => void
@@ -533,7 +593,12 @@ function PreviewSection({
 
   return (
     <div className="stack" style={{ gap: 16 }}>
-      <div className="space-between" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div className="stack" style={{ gap: 12 }}>
+        <div className="controls" role="group" aria-label="Inbox actions" style={{ justifyContent: 'flex-end' }}>
+          {thread.unread ? <button className="btn warn" onClick={onMarkRead} disabled={markingRead || snoozing || syncing}>{markingRead ? 'Marking…' : 'Mark read'}</button> : null}
+          {pr ? <button type="button" className="btn secondary" style={{ minWidth: 200 }} onClick={onSnooze} disabled={!canSnooze || syncing}>{snoozing ? 'Snoozing…' : 'Mark read and Snooze'}</button> : null}
+          {((preview?.thread.webUrl ?? thread.webUrl) || undefined) ? <a className="btn" href={(preview?.thread.webUrl ?? thread.webUrl) || undefined} target="_blank" rel="noreferrer">Open in GitHub</a> : null}
+        </div>
         <div className="stack" style={{ gap: 4 }}>
           <div className="split small muted">
             <span style={{ fontWeight: 700, color: '#111827' }}>{thread.repoFullName}{pr ? ` #${pr.number}` : ''}</span>
@@ -541,10 +606,6 @@ function PreviewSection({
             <span>Updated {formatDateTime(thread.updatedAt)}</span>
           </div>
           <div style={{ fontSize: 24, fontWeight: 800 }}>{thread.subjectTitle}</div>
-        </div>
-        <div className="controls">
-          {thread.unread ? <button className="btn warn" onClick={onMarkRead} disabled={markingRead || syncing}>{markingRead ? 'Marking…' : 'Mark read'}</button> : null}
-          {((preview?.thread.webUrl ?? thread.webUrl) || undefined) ? <a className="btn" href={(preview?.thread.webUrl ?? thread.webUrl) || undefined} target="_blank" rel="noreferrer">Open in GitHub</a> : null}
         </div>
       </div>
 

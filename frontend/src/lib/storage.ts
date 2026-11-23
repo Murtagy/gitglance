@@ -1,4 +1,4 @@
-import type { InboxShow, InboxSnapshot, Preferences, PreviewSnapshot, ReviewSnooze, StorageMode } from './types'
+import type { InboxShow, InboxSnapshot, InboxSnooze, Preferences, PreviewSnapshot, ReviewSnooze, StorageMode } from './types'
 
 const DB_NAME = 'ghnotifs-spa'
 const DB_VERSION = 1
@@ -110,41 +110,50 @@ export async function loadPreviewSnapshot(threadId: string): Promise<PreviewSnap
   return getValue<PreviewSnapshot>(`preview:${threadId}`)
 }
 
-export async function loadReviewSnoozes(viewerId: string): Promise<ReviewSnooze[]> {
+async function loadSnoozes<T>(prefix: string): Promise<T[]> {
   const db = await openDB()
-  const prefix = `review-snooze:${viewerId}:`
   return new Promise((resolve, reject) => {
     const request = db.transaction(KV_STORE, 'readonly').objectStore(KV_STORE).getAll(IDBKeyRange.bound(prefix, `${prefix}\uffff`))
-    request.onsuccess = () => resolve(request.result as ReviewSnooze[])
+    request.onsuccess = () => resolve(request.result as T[])
     request.onerror = () => reject(request.error)
   })
 }
 
-export async function saveReviewSnooze(viewerId: string, snooze: ReviewSnooze): Promise<void> {
+async function saveSnooze(key: string, snooze: { snoozedAt: string }): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(KV_STORE, 'readwrite')
-    tx.objectStore(KV_STORE).put(snooze, `review-snooze:${viewerId}:${snooze.pullRequest.id}`)
+    tx.objectStore(KV_STORE).put(snooze, key)
     tx.oncomplete = () => resolve()
     tx.onerror = tx.onabort = () => reject(tx.error)
   })
 }
 
-export async function deleteReviewSnooze(viewerId: string, snooze: ReviewSnooze): Promise<void> {
+async function updateSnooze<T extends { snoozedAt: string }>(key: string, snooze: T, replacement?: T): Promise<void> {
   const db = await openDB()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(KV_STORE, 'readwrite')
     const store = tx.objectStore(KV_STORE)
-    const key = `review-snooze:${viewerId}:${snooze.pullRequest.id}`
     const request = store.get(key)
     request.onsuccess = () => {
-      // An old activity check must not remove a newer snooze of the same PR.
-      if ((request.result as ReviewSnooze | undefined)?.snoozedAt === snooze.snoozedAt) store.delete(key)
+      // An old activity check must not remove a newer snooze of the same item.
+      if ((request.result as { snoozedAt: string } | undefined)?.snoozedAt !== snooze.snoozedAt) return
+      if (replacement) store.put(replacement, key)
+      else store.delete(key)
     }
     tx.oncomplete = () => resolve()
     tx.onerror = tx.onabort = () => reject(tx.error)
   })
 }
+
+export const loadReviewSnoozes = (viewerId: string) => loadSnoozes<ReviewSnooze>(`review-snooze:${viewerId}:`)
+export const saveReviewSnooze = (viewerId: string, snooze: ReviewSnooze) => saveSnooze(`review-snooze:${viewerId}:${snooze.pullRequest.id}`, snooze)
+export const deleteReviewSnooze = (viewerId: string, snooze: ReviewSnooze) => updateSnooze(`review-snooze:${viewerId}:${snooze.pullRequest.id}`, snooze)
+
+export const loadInboxSnoozes = (viewerId: string) => loadSnoozes<InboxSnooze>(`inbox-snooze:${viewerId}:`)
+export const saveInboxSnooze = (viewerId: string, snooze: InboxSnooze) => saveSnooze(`inbox-snooze:${viewerId}:${snooze.thread.id}`, snooze)
+export const deleteInboxSnooze = (viewerId: string, snooze: InboxSnooze) => updateSnooze(`inbox-snooze:${viewerId}:${snooze.thread.id}`, snooze)
+export const wakeInboxSnooze = (viewerId: string, snooze: InboxSnooze) => updateSnooze(`inbox-snooze:${viewerId}:${snooze.thread.id}`, snooze, { ...snooze, restoredAt: new Date().toISOString() })
 
 const DEFAULT_PREFERENCES: Preferences = {
   show: 'unread',

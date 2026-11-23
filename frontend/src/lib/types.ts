@@ -133,6 +133,17 @@ export type ReviewSnooze = {
   headRefOid: string | null
 }
 
+export type InboxSnooze = Pick<ReviewSnooze, 'pullRequest' | 'snoozedAt'> & {
+  thread: NotificationThread
+  restoredAt?: string
+}
+
+export type InboxWakeEvent = {
+  __typename: string
+  createdAt?: string | null
+  submittedAt?: string | null
+}
+
 export type ReviewSnoozeActivity = {
   headRefOid: string | null
   authorReplied: boolean
