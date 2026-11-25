@@ -49,12 +49,15 @@ export function useInboxSnoozes(token: string, viewer: Viewer | undefined, refre
     },
   })
   const restoreMutation = useMutation({
-    mutationFn: ({ viewerId, snooze, wake }: { token: string; viewerId: string; snooze: InboxSnooze; wake?: boolean }) => wake
-      ? wakeInboxSnooze(viewerId, snooze)
-      : deleteInboxSnooze(viewerId, snooze),
-    onSuccess: async (_data, { token: accountToken, viewerId, snooze }) => {
+    mutationFn: async ({ viewerId, records, action }: { token: string; viewerId: string; records: InboxSnooze[]; action: 'wake' | 'restore' | 'clear' }) => {
+      const update = action === 'wake' ? wakeInboxSnooze : deleteInboxSnooze
+      const outcomes = await Promise.allSettled(records.map((record) => update(viewerId, record)))
+      const failure = outcomes.find((result) => result.status === 'rejected')
+      if (failure) throw failure.reason
+    },
+    onSettled: async (_data, _error, { token: accountToken, viewerId, records }) => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['preview', accountToken, snooze.thread.id] }),
+        ...records.map(({ thread }) => queryClient.invalidateQueries({ queryKey: ['preview', accountToken, thread.id], refetchType: 'none' })),
         queryClient.invalidateQueries({ queryKey: ['inbox-snoozes', viewerId] }),
         queryClient.invalidateQueries({ queryKey: ['notifications', accountToken] }),
       ])
@@ -72,8 +75,9 @@ export function useInboxSnoozes(token: string, viewer: Viewer | undefined, refre
       refetchOnWindowFocus: true,
     })),
   })
+  const isManuallyRestoring = restoreMutation.isPending && restoreMutation.variables?.action !== 'wake'
   useEffect(() => {
-    if (!viewer || !token) return
+    if (!viewer || !token || isManuallyRestoring) return
     const currentKeys = new Set<string>()
     snoozes.forEach((snooze, index) => {
       const key = `${viewer.id}:${snooze.thread.id}:${snooze.snoozedAt}`
@@ -81,18 +85,18 @@ export function useInboxSnoozes(token: string, viewer: Viewer | undefined, refre
       const activity = activityQueries[index]
       if (!activity?.data || wakeAttempts.current.get(key) === activity.dataUpdatedAt) return
       wakeAttempts.current.set(key, activity.dataUpdatedAt)
-      restoreMutation.mutate({ token, viewerId: viewer.id, snooze, wake: true })
+      restoreMutation.mutate({ token, viewerId: viewer.id, records: [snooze], action: 'wake' })
     })
     for (const key of wakeAttempts.current.keys()) {
       if (!currentKeys.has(key)) wakeAttempts.current.delete(key)
     }
-  }, [activityQueries, restoreMutation.mutate, snoozes, token, viewer])
+  }, [activityQueries, isManuallyRestoring, restoreMutation.mutate, snoozes, token, viewer])
 
   const failedCheck = activityQueries.findIndex((query) => query.isError)
   const failed = snoozes[failedCheck]
   const error = snoozesQuery.error ? `Could not load inbox snoozes. Refresh Inbox to retry. ${snoozesQuery.error.message}` :
     snoozeMutation.error ? `Could not mark read and snooze. ${snoozeMutation.error.message}` :
-    restoreMutation.error ? `Could not restore inbox thread. ${restoreMutation.error.message}` :
+    restoreMutation.error ? `Could not ${restoreMutation.variables?.action === 'clear' ? 'clear all snoozes' : 'restore inbox thread'}. ${restoreMutation.error.message}` :
     failed ? `Could not check ${failed.thread.repoFullName} #${failed.pullRequest.number}. Manual restore remains available. ${activityQueries[failedCheck].error?.message}` : ''
 
   return {
@@ -103,9 +107,9 @@ export function useInboxSnoozes(token: string, viewer: Viewer | undefined, refre
     canSnooze: Boolean(viewer && snoozesQuery.isSuccess && !snoozeMutation.isPending),
     isSnoozing: snoozeMutation.isPending,
     isRestoring: restoreMutation.isPending,
-    checkIntervalSeconds: interval / 1000,
     snooze: (thread: NotificationThread, pr: PullRequestData) => { if (viewer) snoozeMutation.mutate({ token, viewerId: viewer.id, thread, pr }) },
-    restore: (snooze: InboxSnooze) => { if (viewer) restoreMutation.mutate({ token, viewerId: viewer.id, snooze }) },
+    restore: (snooze: InboxSnooze) => { if (viewer) restoreMutation.mutate({ token, viewerId: viewer.id, records: [snooze], action: 'restore' }) },
+    clearAll: () => { if (viewer && snoozes.length) restoreMutation.mutate({ token, viewerId: viewer.id, records: snoozes, action: 'clear' }) },
     refresh: () => {
       void queryClient.invalidateQueries({ queryKey: ['inbox-snoozes', viewer?.id] })
       void queryClient.invalidateQueries({ queryKey: ['inbox-snooze-activity', token, viewer?.id] })

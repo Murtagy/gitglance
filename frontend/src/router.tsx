@@ -1,6 +1,7 @@
 import { Link, Outlet, createRootRoute, createRoute, createRouter, createHashHistory, useRouterState } from '@tanstack/react-router'
 import { QueryClient } from '@tanstack/react-query'
 import { useAppContext } from './lib/app-context'
+import type { InboxShow, InboxTab } from './lib/types'
 import { InboxPage } from './routes/inbox'
 import { SettingsPage } from './routes/settings'
 import { ReviewsPage } from './routes/reviews'
@@ -15,7 +16,7 @@ function RootLayout() {
         <div className="container" style={{ padding: 0 }}>
           <div className="topbar-row">
             <nav>
-              <Link className={pathname === '/' ? 'active' : ''} to="/" search={{ show: 'unread', selected: '' }}>Inbox</Link>
+              <Link className={pathname === '/' ? 'active' : ''} to="/" search={{ show: 'unread', selected: '', tab: 'for-me' }}>Inbox</Link>
               <Link className={pathname === '/reviews' ? 'active' : ''} to="/reviews" search={{ selected: '' }}>Reviews</Link>
               <Link className={pathname === '/settings' ? 'active' : ''} to="/settings">Settings</Link>
               {token ? <span className="muted small">Browser-local GitHub token active</span> : <span className="muted small">No token loaded</span>}
@@ -42,9 +43,10 @@ export const inboxRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: InboxPage,
-  validateSearch: (search: Record<string, unknown>) => ({
+  validateSearch: (search: Record<string, unknown>): { show: InboxShow; selected: string; tab: InboxTab } => ({
     show: search.show === 'all' ? 'all' : 'unread',
     selected: typeof search.selected === 'string' ? search.selected : '',
+    tab: search.tab === 'watching' || search.tab === 'drafts' || search.tab === 'snoozed' ? search.tab : 'for-me',
   }),
 })
 

@@ -5,19 +5,12 @@ import { reviewsRoute } from '../router'
 import { GitHubTokenControls } from '../components/github-token-controls'
 import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview, PullRequestStateBadge } from '../components/pull-request-preview'
 import { useAppContext } from '../lib/app-context'
-import { fetchPullRequestDetails, fetchReviewRequests, fetchViewer, REVIEW_REQUESTS_SEARCH } from '../lib/github'
+import { fetchPullRequestDetails, fetchReviewRequests, fetchViewer, isViewerRequested, REVIEW_REQUESTS_SEARCH } from '../lib/github'
 import { formatDateTime, formatRelativeTime } from '../lib/format'
 import { useReviewSnoozes } from '../lib/use-review-snoozes'
 import type { RequestedPullRequest, ReviewDraft } from '../lib/types'
 
 const SEARCH_URL = `https://github.com/search?type=pullrequests&q=${encodeURIComponent(REVIEW_REQUESTS_SEARCH)}`
-
-function isViewerRequested(pr: RequestedPullRequest, viewerLogin?: string): boolean {
-  return Boolean(viewerLogin && pr.reviewRequests?.nodes.some((request) => {
-    const reviewer = request?.requestedReviewer
-    return reviewer?.__typename === 'User' && reviewer.login.toLowerCase() === viewerLogin.toLowerCase()
-  }))
-}
 
 function reviewCardStatus(pr: RequestedPullRequest, approvedByViewer: boolean, viewerLogin?: string) {
   const opinions = pr.reviews?.nodes ?? []

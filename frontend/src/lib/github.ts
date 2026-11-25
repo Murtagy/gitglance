@@ -108,6 +108,20 @@ export async function fetchViewer(token: string): Promise<Viewer> {
 // GitHub includes requests to the viewer's teams, not just direct requests.
 export const REVIEW_REQUESTS_SEARCH = 'is:pr is:open review-requested:@me sort:updated-desc'
 
+const REVIEW_REQUESTS_FIELDS = `
+  reviewRequests(first: 100) {
+    pageInfo { hasNextPage }
+    nodes { requestedReviewer { __typename ... on User { login } } }
+  }
+`
+
+export function isViewerRequested(pr: Pick<PullRequestData, 'reviewRequests'>, viewerLogin?: string): boolean {
+  return Boolean(viewerLogin && pr.reviewRequests?.nodes.some((request) => {
+    const reviewer = request?.requestedReviewer
+    return reviewer?.__typename === 'User' && reviewer.login.toLowerCase() === viewerLogin.toLowerCase()
+  }))
+}
+
 export async function fetchReviewRequests(token: string, after: string | null = null): Promise<ReviewRequestsPage> {
   const query = `
     query($search: String!, $after: String) {
@@ -132,15 +146,7 @@ export async function fetchReviewRequests(token: string, after: string | null = 
             reviews: latestOpinionatedReviews(last: 100) {
               nodes { state createdAt author { login } }
             }
-            reviewRequests(first: 100) {
-              pageInfo { hasNextPage }
-              nodes {
-                requestedReviewer {
-                  __typename
-                  ... on User { login }
-                }
-              }
-            }
+            ${REVIEW_REQUESTS_FIELDS}
           }
         }
       }
@@ -388,6 +394,7 @@ export async function fetchPullRequestDetails(token: string, owner: string, repo
           createdAt
           repository { nameWithOwner }
           author { login }
+          ${REVIEW_REQUESTS_FIELDS}
           commits(last: 20) {
             totalCount
             nodes { commit { oid message authoredDate } }

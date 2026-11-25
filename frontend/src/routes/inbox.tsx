@@ -6,12 +6,21 @@ import { useAppContext } from '../lib/app-context'
 import { useInboxSnoozes } from '../lib/use-inbox-snoozes'
 import { GitHubTokenControls } from '../components/github-token-controls'
 import { ApprovalBadge, EMPTY_REVIEW_DRAFT, PullRequestPreview, PullRequestStateBadge } from '../components/pull-request-preview'
-import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, latestReviewAuthors, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, sortNotificationThreadsOldestFirst } from '../lib/github'
+import { buildThreadPreview, fetchNotifications, fetchPullRequestDetails, fetchViewer, isViewerRequested, latestReviewAuthors, markThreadRead, parsePullRequestApiUrl, resolveNotificationWebUrl, sortNotificationThreadsOldestFirst } from '../lib/github'
 import { formatDateTime, formatRelativeTime, formatStaleness } from '../lib/format'
 import { clearPreviewCaches, deleteInboxSnooze, loadInboxSnapshot, loadPreviewSnapshot, saveInboxSnapshot, savePreviewSnapshot } from '../lib/storage'
-import type { InboxShow, InboxSnapshot, InboxSnooze, NotificationThread, PullRequestData, ReviewDraft, ThreadPreview } from '../lib/types'
+import type { InboxShow, InboxSnapshot, InboxSnooze, InboxTab, NotificationThread, PullRequestData, ReviewDraft, ThreadPreview } from '../lib/types'
 
 const PREVIEW_CACHE_TTL_MS = 60_000
+const TAB_LABELS: Record<InboxTab, string> = { 'for-me': 'For me', watching: 'Watching', drafts: 'Drafts', snoozed: 'Snoozed' }
+
+function activeTabFor(pr?: PullRequestData, viewerLogin?: string): Exclude<InboxTab, 'snoozed'> {
+  const isOpen = pr && !pr.merged && pr.state.toUpperCase() === 'OPEN'
+  const isAuthor = viewerLogin && pr?.author?.login?.toLowerCase() === viewerLogin.toLowerCase()
+  if (isAuthor || (isOpen && isViewerRequested(pr, viewerLogin))) return 'for-me'
+  return isOpen && pr.isDraft ? 'drafts' : 'watching'
+}
+
 type MarkReadRequest = { thread: NotificationThread; token: string; show: InboxShow; viewerId?: string; restored?: InboxSnooze }
 
 async function fetchInboxSnapshot(token: string, show: InboxShow, pages: number): Promise<InboxSnapshot> {
@@ -85,7 +94,8 @@ function updateFavicon(hasUnseenChanges: boolean, syncing: boolean) {
 async function loadThreadPreview(token: string, thread: NotificationThread): Promise<ThreadPreview> {
   const cached = await loadPreviewSnapshot(thread.id)
   const cachedMatches = cached && cached.preview.thread.updatedAt === thread.updatedAt && (cached.preview.thread.lastReadAt ?? null) === (thread.lastReadAt ?? null)
-  if (cached && cachedMatches && (Date.now() - new Date(cached.savedAt).getTime()) <= PREVIEW_CACHE_TTL_MS) {
+  const hasReviewRequests = !cached?.preview.pullRequest || cached.preview.pullRequest.reviewRequests !== undefined
+  if (cached && cachedMatches && hasReviewRequests && (Date.now() - new Date(cached.savedAt).getTime()) <= PREVIEW_CACHE_TTL_MS) {
     return cached.preview
   }
 
@@ -122,7 +132,8 @@ function TokenSetupCard() {
 
 export function InboxPage() {
   const { token, preferences, setShow } = useAppContext()
-  const { show, selected } = inboxRoute.useSearch() as { show: InboxShow; selected: string }
+  const { show, selected, tab } = inboxRoute.useSearch()
+  const isSnoozedTab = tab === 'snoozed'
   const navigate = useNavigate({ from: inboxRoute.fullPath })
   const queryClient = useQueryClient()
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({})
@@ -166,7 +177,7 @@ export function InboxPage() {
     if (selectedThread?.id !== threadId) return
     const index = threads.findIndex((thread) => thread.id === threadId)
     const next = threads[index + 1] ?? threads[index - 1]
-    navigate({ search: (prev) => ({ ...prev, selected: next?.id ?? '' }), replace: true, resetScroll: false })
+    navigate({ search: (prev) => 'tab' in prev && prev.tab === tab ? { ...prev, selected: next?.id ?? '' } : prev, replace: true, resetScroll: false })
   })
   const isInitializingSnoozes = Boolean(token && ((!viewerQuery.isSuccess && !viewerQuery.isError) || snoozes.isLoading))
   const loadedThreads = useMemo(() => {
@@ -179,11 +190,34 @@ export function InboxPage() {
     }
     return sortNotificationThreadsOldestFirst([...merged.values()])
   }, [notificationsQuery.data?.threads, snoozes.restored])
-  const threads = useMemo(() => {
+  const activeThreads = useMemo(() => {
     const hiddenIds = new Set(snoozes.snoozes.map((snooze) => snooze.thread.id))
     return isInitializingSnoozes ? [] : loadedThreads.filter((thread) => !hiddenIds.has(thread.id))
   }, [isInitializingSnoozes, loadedThreads, snoozes.snoozes])
-  const inboxSignature = useMemo(() => threads.map((thread) => `${thread.id}:${thread.updatedAt}:${thread.unread ? 'u' : 'r'}`).join('|'), [threads])
+  const snoozedThreads = useMemo(() => sortNotificationThreadsOldestFirst(snoozes.snoozes.map(({ thread, snoozedAt, pullRequest }) => ({
+    ...thread, unread: false, lastReadAt: snoozedAt, webUrl: pullRequest.url,
+  }))), [snoozes.snoozes])
+  const inboxSignature = useMemo(() => activeThreads.map((thread) => `${thread.id}:${thread.updatedAt}:${thread.unread ? 'u' : 'r'}`).join('|'), [activeThreads])
+  const candidates = isSnoozedTab ? snoozedThreads : activeThreads
+  const pagePreviewQueries = useQueries({
+    queries: candidates.map((thread) => ({
+      queryKey: isSnoozedTab ? ['preview', token, thread.id, 'snoozed', thread.lastReadAt] : ['preview', token, thread.id],
+      enabled: Boolean(token),
+      queryFn: () => loadThreadPreview(token, thread),
+      staleTime: PREVIEW_CACHE_TTL_MS,
+    })),
+  })
+  const previewByThreadId = new Map(candidates.map((thread, index) => [thread.id, pagePreviewQueries[index]]))
+  const threads = isSnoozedTab ? candidates : candidates.filter((thread, index) => {
+    if (thread.subjectType !== 'PullRequest') return tab === 'watching'
+    const preview = pagePreviewQueries[index]
+    return !preview.isPending && activeTabFor(preview.data?.pullRequest, viewerQuery.data?.login) === tab
+  })
+  const isLoadingThreads = isInitializingSnoozes || (!isSnoozedTab && (notificationsQuery.isLoading || candidates.some((thread, index) => thread.subjectType === 'PullRequest' && pagePreviewQueries[index].isPending)))
+  const selectedThread = threads.find((thread) => thread.id === selected) ?? threads[0]
+  const selectedThreadId = selectedThread?.id ?? ''
+  const previewQuery = selectedThread ? previewByThreadId.get(selectedThread.id) : undefined
+  const selectedSnooze = isSnoozedTab ? snoozes.snoozes.find((record) => record.thread.id === selectedThread?.id) : undefined
 
   useEffect(() => {
     const visibleIds = new Set(threads.map((thread) => thread.id))
@@ -195,44 +229,10 @@ export function InboxPage() {
   }, [threads])
 
   useEffect(() => {
-    if (isInitializingSnoozes) return
-    if (!threads.length) {
-      if (selected) navigate({ search: (prev) => ({ ...prev, selected: '' }), replace: true, resetScroll: false })
-      return
+    if (!isLoadingThreads && selected !== selectedThreadId) {
+      navigate({ search: (prev) => ({ ...prev, selected: selectedThreadId }), replace: true, resetScroll: false })
     }
-    if (!selected || !threads.some((thread) => thread.id === selected)) {
-      navigate({ search: (prev) => ({ ...prev, selected: threads[0].id }), replace: true, resetScroll: false })
-    }
-  }, [isInitializingSnoozes, navigate, selected, threads])
-
-  const selectedThread = useMemo(() => threads.find((thread) => thread.id === selected) ?? threads[0], [selected, threads])
-
-  const pagePreviewQueries = useQueries({
-    queries: threads.map((thread) => ({
-      queryKey: ['preview', token, thread.id],
-      enabled: Boolean(token),
-      queryFn: () => loadThreadPreview(token, thread),
-      staleTime: PREVIEW_CACHE_TTL_MS,
-    })),
-  })
-
-  const previewByThreadId = useMemo(() => {
-    const entries: Array<[string, ThreadPreview]> = []
-    for (let index = 0; index < threads.length; index += 1) {
-      const preview = pagePreviewQueries[index]?.data
-      if (preview) entries.push([threads[index].id, preview])
-    }
-    return new Map(entries)
-  }, [pagePreviewQueries, threads])
-
-  const previewQuery = useQuery({
-    queryKey: ['preview', token, selectedThread?.id],
-    enabled: Boolean(token && selectedThread),
-    queryFn: async () => {
-      if (!selectedThread) throw new Error('Missing selected thread')
-      return loadThreadPreview(token, selectedThread)
-    },
-  })
+  }, [isLoadingThreads, navigate, selected, selectedThreadId])
 
   const loadMoreMutation = useMutation({
     mutationFn: async () => {
@@ -249,7 +249,7 @@ export function InboxPage() {
   const refreshMutation = useMutation({
     mutationFn: async () => {
       await clearPreviewCaches()
-      return notificationsQuery.refetch()
+      await Promise.all([notificationsQuery.refetch(), queryClient.invalidateQueries({ queryKey: ['preview', token] })])
     },
   })
 
@@ -288,7 +288,7 @@ export function InboxPage() {
 
         if (selected === thread.id) {
           const fallback = visibleAfterRead[Math.min(currentIndex, Math.max(0, visibleAfterRead.length - 1))]
-          navigate({ search: (prev) => ({ ...prev, selected: fallback?.id ?? '' }), replace: true, resetScroll: false })
+          navigate({ search: (prev) => 'tab' in prev && prev.tab === tab ? { ...prev, selected: fallback?.id ?? '' } : prev, replace: true, resetScroll: false })
         }
       }
 
@@ -377,7 +377,7 @@ export function InboxPage() {
         move(-1)
       } else if ((event.key === 'o' || event.key === 'O') && threads.length) {
         event.preventDefault()
-        const url = (previewQuery.data?.thread.id === selectedThread?.id ? previewQuery.data.thread.webUrl : undefined) ?? selectedThread?.webUrl
+        const url = previewQuery?.data?.thread.webUrl ?? selectedThread?.webUrl
         if (url) window.open(url, '_blank', 'noopener,noreferrer')
       } else if ((event.key === 'm' || event.key === 'M') && threads.length) {
         event.preventDefault()
@@ -392,7 +392,7 @@ export function InboxPage() {
 
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [markReadMutation, navigate, notificationsQuery.isFetching, previewQuery.data, refreshMutation, selectedThread, snoozes.isSnoozing, threads])
+  }, [markReadMutation, navigate, notificationsQuery.isFetching, previewQuery?.data, refreshMutation, selectedThread, snoozes.isSnoozing, threads])
 
   useEffect(() => {
     if (!notificationsQuery.dataUpdatedAt || !inboxSignature) return
@@ -433,38 +433,37 @@ export function InboxPage() {
         </div>
       </div>
 
+      <div className="controls" role="group" aria-label="Inbox categories">
+        {(Object.keys(TAB_LABELS) as InboxTab[]).map((category) => (
+          <button key={category} type="button" className={category === tab ? 'btn' : 'btn secondary'} aria-pressed={category === tab}
+            onClick={() => { if (category !== tab) navigate({ search: (prev) => ({ ...prev, tab: category, selected: '' }), resetScroll: false }) }}>
+            {TAB_LABELS[category]}{category === 'snoozed' ? ` (${snoozes.snoozes.length})` : ''}
+          </button>
+        ))}
+      </div>
       <div className="controls">
-        <label className="split">
-          <span>Show:</span>
-          <select className="form-control" value={show} onChange={(event) => navigate({ search: (prev) => ({ ...prev, show: (event.target.value === 'all' ? 'all' : 'unread') as InboxShow }) })}>
-            <option value="unread">Unread</option>
-            <option value="all">All active</option>
-          </select>
-        </label>
+        {isSnoozedTab ? (
+          <button type="button" className="btn secondary" disabled={!snoozes.snoozes.length || snoozes.isRestoring} onClick={snoozes.clearAll}>Clear all</button>
+        ) : (
+          <label className="split">
+            <span>Show:</span>
+            <select className="form-control" value={show} onChange={(event) => navigate({ search: (prev) => ({ ...prev, show: event.target.value === 'all' ? 'all' : 'unread' }) })}>
+              <option value="unread">Unread</option>
+              <option value="all">All active</option>
+            </select>
+          </label>
+        )}
         <span className="muted small">{threads.length} loaded</span>
-        <span className="muted small">Keys: j/k move, o open GitHub, m mark read, r refresh.</span>
+        <span className="muted small">Keys: j/k move, o open GitHub, {isSnoozedTab ? '' : 'm mark read, '}r refresh.</span>
       </div>
 
       {notificationsQuery.isError ? <div className="error">{notificationsQuery.error instanceof Error ? notificationsQuery.error.message : 'Failed to load notifications'}</div> : null}
 
       {viewerQuery.isError ? <div className="notice" role="status">Could not identify your account. Inbox snoozing is unavailable. Refresh Inbox to retry.</div> : null}
       {snoozes.error ? <div className="error" role="alert">{snoozes.error}</div> : null}
-      {snoozes.snoozes.length ? (
-        <details className="card" style={{ padding: 16 }}>
-          <summary>Snoozed ({snoozes.snoozes.length})</summary>
-          <p className="small muted">Hidden locally until a new comment, submitted review, or review request. Commit-only updates stay hidden, including main/master merges. Checked every {snoozes.checkIntervalSeconds}s while Inbox is open. Auto-woken PRs stay locally unread until marked read. Restore ends snoozing; GitHub read status stays unchanged.</p>
-          <div className="stack">
-            {snoozes.snoozes.map((snooze) => (
-              <div key={snooze.thread.id} className="space-between">
-                <a href={snooze.pullRequest.url} target="_blank" rel="noreferrer">{snooze.thread.repoFullName} #{snooze.pullRequest.number} · {snooze.thread.subjectTitle}</a>
-                <button type="button" className="btn secondary" disabled={snoozes.isRestoring} aria-label={`Restore ${snooze.thread.subjectTitle}`} onClick={() => snoozes.restore(snooze)}>Restore</button>
-              </div>
-            ))}
-          </div>
-        </details>
-      ) : null}
+      {isSnoozedTab ? <div className="notice">Snoozes end on a new comment, submitted review, or review request. Clear all ends snoozes without changing GitHub read status.</div> : null}
 
-      {markReadMutation.isError ? (
+      {!isSnoozedTab && markReadMutation.isError ? (
         <div className="error controls" role="alert">
           <span>Could not mark “{markReadMutation.variables?.thread.subjectTitle}” as read. {markReadMutation.error.message}</span>
           <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching} onClick={() => { if (markReadMutation.variables) markReadMutation.mutate(markReadMutation.variables) }}>Retry</button>
@@ -473,10 +472,10 @@ export function InboxPage() {
 
       <div className="grid-main">
         <div className="inbox-list">
-          {notificationsQuery.isLoading || isInitializingSnoozes ? <div className="card empty loading">Loading inbox…</div> : null}
-          {!notificationsQuery.isLoading && !isInitializingSnoozes && !threads.length ? <div className="card empty">No inbox threads found.</div> : null}
+          {isLoadingThreads && !threads.length ? <div className="card empty loading">Loading inbox…</div> : null}
+          {!isLoadingThreads && !threads.length ? <div className="card empty">{isSnoozedTab ? 'No snoozed threads.' : 'No inbox threads in this tab.'}</div> : null}
           {threads.map((thread) => {
-            const prefetchedPreview = previewByThreadId.get(thread.id)
+            const prefetchedPreview = previewByThreadId.get(thread.id)?.data
             const pr = prefetchedPreview?.pullRequest
             const isClosed = Boolean(pr && !pr.merged && pr.state.toUpperCase() === 'CLOSED')
             const isDraft = Boolean(pr?.isDraft && !pr.merged && pr.state.toUpperCase() === 'OPEN')
@@ -527,7 +526,7 @@ export function InboxPage() {
               </div>
             )
           })}
-          {notificationsQuery.data?.nextPage ? (
+          {!isSnoozedTab && notificationsQuery.data?.nextPage ? (
             <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching || markReadMutation.isPending || snoozes.isSnoozing || loadMoreMutation.isPending} onClick={() => loadMoreMutation.mutate()}>
               {loadMoreMutation.isPending ? 'Loading…' : 'Load more'}
             </button>
@@ -542,13 +541,15 @@ export function InboxPage() {
               thread={selectedThread}
               reviewDraft={reviewDrafts[selectedThread.id] ?? EMPTY_REVIEW_DRAFT}
               onReviewDraftChange={(draft: ReviewDraft): void => setReviewDrafts((current) => ({ ...current, [selectedThread.id]: draft }))}
-              preview={previewQuery.data}
+              preview={previewQuery?.data}
               viewerLogin={viewerQuery.data?.login}
-              isLoading={previewQuery.isLoading}
-              error={previewQuery.error instanceof Error ? previewQuery.error.message : ''}
+              isLoading={Boolean(previewQuery?.isLoading)}
+              error={previewQuery?.error instanceof Error ? previewQuery.error.message : ''}
               onMarkRead={() => markRead(selectedThread)}
               markingRead={markReadMutation.isPending}
-              onSnooze={() => { if (previewQuery.data?.pullRequest) snoozes.snooze(selectedThread, previewQuery.data.pullRequest) }}
+              onSnooze={isSnoozedTab ? undefined : () => { if (previewQuery?.data?.pullRequest) snoozes.snooze(selectedThread, previewQuery.data.pullRequest) }}
+              onRestore={selectedSnooze ? () => snoozes.restore(selectedSnooze) : undefined}
+              restoring={snoozes.isRestoring}
               canSnooze={snoozes.canSnooze && !markReadMutation.isPending}
               snoozing={snoozes.isSnoozing}
               syncing={notificationsQuery.isFetching}
@@ -569,6 +570,8 @@ function PreviewSection({
   onMarkRead,
   markingRead,
   onSnooze,
+  onRestore,
+  restoring,
   canSnooze,
   snoozing,
   syncing,
@@ -582,7 +585,9 @@ function PreviewSection({
   error: string
   onMarkRead: () => void
   markingRead: boolean
-  onSnooze: () => void
+  onSnooze?: () => void
+  onRestore?: () => void
+  restoring: boolean
   canSnooze: boolean
   snoozing: boolean
   syncing: boolean
@@ -596,7 +601,8 @@ function PreviewSection({
       <div className="stack" style={{ gap: 12 }}>
         <div className="controls" role="group" aria-label="Inbox actions" style={{ justifyContent: 'flex-end' }}>
           {thread.unread ? <button className="btn warn" onClick={onMarkRead} disabled={markingRead || snoozing || syncing}>{markingRead ? 'Marking…' : 'Mark read'}</button> : null}
-          {pr ? <button type="button" className="btn secondary" style={{ minWidth: 200 }} onClick={onSnooze} disabled={!canSnooze || syncing}>{snoozing ? 'Snoozing…' : 'Mark read and Snooze'}</button> : null}
+          {pr && onSnooze ? <button type="button" className="btn secondary" style={{ minWidth: 200 }} onClick={onSnooze} disabled={!canSnooze || syncing}>{snoozing ? 'Snoozing…' : 'Mark read and Snooze'}</button> : null}
+          {onRestore ? <button type="button" className="btn secondary" onClick={onRestore} disabled={restoring} aria-label={`Restore ${thread.subjectTitle}`}>Restore</button> : null}
           {((preview?.thread.webUrl ?? thread.webUrl) || undefined) ? <a className="btn" href={(preview?.thread.webUrl ?? thread.webUrl) || undefined} target="_blank" rel="noreferrer">Open in GitHub</a> : null}
         </div>
         <div className="stack" style={{ gap: 4 }}>
@@ -616,7 +622,7 @@ function PreviewSection({
         pr ? (
           <PullRequestPreview
             pullRequest={pr}
-            changesSince={preview.changesSince}
+            changesSince={thread.lastReadAt ?? null}
             viewerLogin={viewerLogin}
             reviewDraft={reviewDraft}
             onReviewDraftChange={onReviewDraftChange}

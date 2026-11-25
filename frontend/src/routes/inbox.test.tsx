@@ -32,6 +32,7 @@ const pr: PullRequestData = {
   id: 'pr1', number: 1, title: 'First PR', body: '', url: 'https://github.com/octo/repo/pull/1',
   state: 'OPEN', isDraft: false, merged: false, createdAt: threads[0].updatedAt,
   repository: { nameWithOwner: 'octo/repo' }, author: { login: 'author' },
+  reviewRequests: { nodes: [{ requestedReviewer: { __typename: 'User', login: 'viewer' } }], pageInfo: { hasNextPage: false } },
   commits: { totalCount: 0, nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] },
   comments: { totalCount: 0, nodes: [] }, files: { nodes: [] }, changedFiles: 1, additions: 30, deletions: 0,
 }
@@ -41,14 +42,15 @@ function snoozeRecord(thread: NotificationThread = threads[0]): InboxSnooze {
   return { thread, pullRequest: { ...pr, id: `pr${thread.id}`, number: Number(thread.id) }, snoozedAt: new Date().toISOString() }
 }
 
-function renderInbox(token: string = 'token', pullRequest: PullRequestData = pr, inboxThreads: NotificationThread[] = threads): void {
+function renderInbox(token: string = 'token', pullRequest: PullRequestData | ((thread: NotificationThread) => PullRequestData) = pr, inboxThreads: NotificationThread[] = threads): void {
   sessionStorage.setItem('github-token', token)
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
   const snapshot: InboxSnapshot = { show: 'unread', threads: inboxThreads, savedAt: new Date().toISOString(), source: 'network', pagesLoaded: 1, nextPage: 2 }
   queryClient.setQueryData(['notifications', 'token', 'unread'], snapshot)
   queryClient.setQueryData(['viewer', 'token'], { id: 'viewer', login: 'viewer' })
   for (const thread of inboxThreads) {
-    queryClient.setQueryData(['preview', 'token', thread.id], buildThreadPreview(thread, { ...pullRequest, id: `pr${thread.id}`, number: Number(thread.id) }))
+    const details = typeof pullRequest === 'function' ? pullRequest(thread) : pullRequest
+    queryClient.setQueryData(['preview', 'token', thread.id], buildThreadPreview(thread, { ...details, id: `pr${thread.id}`, number: Number(thread.id) }))
   }
   render(<QueryClientProvider client={queryClient}><AppProvider><RouterProvider router={buildRouter(queryClient)} /></AppProvider></QueryClientProvider>)
 }
@@ -109,6 +111,7 @@ it('preserves notification reason styling when changing selected card', async ()
 it.each([false, true])('shows closed PRs in red ahead of notification reason and draft status (draft: %s)', async (isDraft) => {
   const user = userEvent.setup()
   renderInbox('token', { ...pr, state: 'CLOSED', isDraft }, [threads[0], { ...threads[1], reason: 'subscribed' }])
+  await user.click(await screen.findByRole('button', { name: 'Watching' }))
   const requestedCard = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
   const watchingCard = screen.getByRole('button', { name: /octo\/repo.*Second PR/ })
   for (const card of [requestedCard, watchingCard]) {
@@ -129,6 +132,7 @@ it.each([false, true])('shows closed PRs in red ahead of notification reason and
 
 it('keeps merged PRs purple rather than treating them as closed', async () => {
   renderInbox('token', { ...pr, state: 'MERGED', merged: true, isDraft: true })
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Watching' }))
   const card = await screen.findByRole('button', { name: /octo\/repo.*First PR/ })
   expect(card).not.toHaveClass('pr-closed')
   expect(within(card).getByLabelText('Merged pull request')).toHaveClass('purple')
@@ -321,8 +325,11 @@ it.each([1, 2])('marks read and snoozes PR #%s, retaining nearby selection acros
   await screen.findByText('Snoozed (1)')
   expect(screen.queryByRole('button', { name: new RegExp(`octo/repo.*${title}`) })).not.toBeInTheDocument()
   await user.click(screen.getByText('Snoozed (1)'))
+  const snoozedCard = await screen.findByRole('button', { name: new RegExp(`octo/repo.*${title}`) })
+  expect(snoozedCard).toHaveClass('selected')
+  expect(within(snoozedCard).queryByLabelText('Unread')).not.toBeInTheDocument()
   await user.click(screen.getByRole('button', { name: `Restore ${title}` }))
-  expect(await screen.findByRole('button', { name: new RegExp(`octo/repo.*${title}`) })).toBeInTheDocument()
+  expect(await screen.findByText('No snoozed threads.')).toBeInTheDocument()
   expect(savedSnoozes.size).toBe(0)
 })
 
@@ -352,7 +359,7 @@ it('checks snoozed PRs outside loaded notification pages and preserves snoozes o
   expect(screen.getByRole('alert')).toHaveTextContent('Rate limited')
   expect(savedSnoozes.size).toBe(1)
   await user.click(screen.getByText('Snoozed (1)'))
-  expect(screen.getByRole('link', { name: /Outside pages/ })).toHaveAttribute('href', pr.url)
+  expect(await screen.findByRole('link', { name: 'Open in GitHub' })).toHaveAttribute('href', pr.url)
   await user.click(screen.getByRole('button', { name: 'Restore Outside pages' }))
   await waitFor(() => expect(screen.queryByText('Snoozed (1)')).not.toBeInTheDocument())
 })
@@ -429,6 +436,7 @@ it('keeps an in-flight snooze associated with its original account and preserves
   await user.click(await screen.findByRole('button', { name: 'Mark read and Snooze' }))
   await act(async () => { queryClient.setQueryData(['viewer', 'token'], { id: 'other', login: 'other' }) })
   await waitFor(() => expect(loadInboxSnoozes).toHaveBeenCalledWith('other'))
+  await user.click(screen.getByRole('button', { name: 'Watching' }))
   await waitFor(() => expect(screen.getByRole('button', { name: /octo\/repo.*First PR/ })).toHaveClass('selected'))
   await act(async () => { finishRead() })
   await waitFor(() => expect(savedSnoozes.has('viewer:1')).toBe(true))
@@ -449,7 +457,8 @@ it('keeps failed restores recoverable and excludes every snoozed PR from keyboar
   expect(await screen.findByRole('alert')).toHaveTextContent('Could not restore inbox thread')
   expect(savedSnoozes.size).toBe(2)
   await user.click(screen.getByRole('button', { name: 'Restore First PR' }))
-  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+  expect(await screen.findByText('Snoozed (1)')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /octo\/repo.*First PR/ })).not.toBeInTheDocument()
 })
 
 it('isolates snoozes by account and disables new snoozes after a storage read failure', async () => {
@@ -473,8 +482,9 @@ it('loads more and preserves loaded page count on refresh', async () => {
   })
   renderInbox()
   await user.click(await screen.findByRole('button', { name: 'Load more' }))
-  expect(await screen.findByText('3 loaded')).toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument())
+  await user.click(screen.getByRole('button', { name: 'Watching' }))
+  expect(await screen.findByRole('button', { name: /octo\/repo.*Third issue/ })).toBeInTheDocument()
   expect(fetchNotifications).toHaveBeenLastCalledWith('token', 'unread', 2)
   await user.click(screen.getByRole('button', { name: 'Refresh Inbox' }))
   await waitFor(() => expect(fetchNotifications).toHaveBeenCalledTimes(2))
@@ -489,6 +499,66 @@ it('keeps existing rows when loading more fails and allows retry', async () => {
   expect(await screen.findByText('Rate limited')).toBeInTheDocument()
   expect(screen.getByText('2 loaded')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled()
+})
+
+it('groups notifications by ownership and current review requests before draft status', async () => {
+  const user = userEvent.setup()
+  const nonRequested = { ...pr, reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } } }
+  const details: PullRequestData[] = [
+    { ...nonRequested, isDraft: true, author: { login: 'VIEWER' } },
+    { ...pr, isDraft: true },
+    { ...nonRequested, isDraft: true },
+    nonRequested,
+    pr,
+  ]
+  const mixed = details.map((_, index): NotificationThread => ({
+    ...threads[0], id: String(index + 1), subjectTitle: `Notification ${index + 1}`,
+    reason: index < 2 ? 'subscribed' : 'review_requested', subjectType: index === 4 ? 'Issue' : 'PullRequest',
+  }))
+  renderInbox('token', (thread) => details[Number(thread.id) - 1], mixed)
+  const titles = () => screen.getAllByRole('button', { name: /octo\/repo.*Notification/ }).map((row) => row.querySelector('.inbox-item-title')?.textContent)
+  expect(await screen.findByRole('button', { name: 'For me' })).toHaveAttribute('aria-pressed', 'true')
+  await waitFor(() => expect(titles()).toEqual(['Notification 1', 'Notification 2']))
+  await user.click(screen.getByRole('button', { name: 'Watching' }))
+  expect(titles()).toEqual(['Notification 4', 'Notification 5'])
+  await user.click(screen.getByRole('button', { name: 'Drafts' }))
+  expect(titles()).toEqual(['Notification 3'])
+})
+
+it('moves a PR on refresh when its review request ends but the notification reason remains', async () => {
+  const user = userEvent.setup()
+  renderInbox('token', pr, [threads[0]])
+  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+  vi.mocked(fetchPullRequestDetails).mockResolvedValue({ ...pr, reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } } })
+  vi.mocked(fetchNotifications).mockResolvedValue({ threads: [threads[0]], pagesLoaded: 1, nextPage: null })
+  await user.click(screen.getByRole('button', { name: 'Refresh Inbox' }))
+  expect(await screen.findByText('No inbox threads in this tab.')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Watching' }))
+  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+})
+
+it('clears all snoozes from the tab without changing GitHub read status', async () => {
+  const user = userEvent.setup()
+  for (const thread of threads) savedSnoozes.set(`viewer:${thread.id}`, snoozeRecord(thread))
+  savedSnoozes.set('other:1', snoozeRecord())
+  vi.mocked(fetchNotifications).mockImplementation(async (_token, show) => ({
+    threads: show === 'all' ? threads.map((thread) => ({ ...thread, unread: false })) : [], pagesLoaded: 1, nextPage: null,
+  }))
+  renderInbox('token', pr, [])
+  await user.click(await screen.findByRole('button', { name: 'Snoozed (2)' }))
+  expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+  await user.keyboard('j')
+  expect(await screen.findByRole('button', { name: 'Restore Second PR' })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Clear all' }))
+  expect(await screen.findByText('No snoozed threads.')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Clear all' })).toBeDisabled()
+  expect(markThreadRead).not.toHaveBeenCalled()
+  expect([...savedSnoozes.keys()]).toEqual(['other:1'])
+  await user.click(screen.getByRole('button', { name: 'For me' }))
+  expect(await screen.findByText('No inbox threads in this tab.')).toBeInTheDocument()
+  await user.selectOptions(screen.getByRole('combobox'), 'all')
+  expect(await screen.findByRole('button', { name: /octo\/repo.*First PR/ })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Mark First PR as read' })).not.toBeInTheDocument()
 })
 
 it('can sign in without changing hook order', async () => {

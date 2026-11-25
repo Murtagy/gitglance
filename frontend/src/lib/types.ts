@@ -1,6 +1,7 @@
 export type StorageMode = 'memory' | 'session' | 'local'
 
 export type InboxShow = 'unread' | 'all'
+export type InboxTab = 'for-me' | 'watching' | 'drafts' | 'snoozed'
 
 export type Viewer = {
   id: string
@@ -111,20 +112,23 @@ export type PullRequestData = {
   additions: number
   deletions: number
   reviewDecision?: string | null
+  reviewRequests?: ReviewRequestConnection | null
 }
 
 export type RequestedReviewer =
   | { __typename: 'User'; login: string }
   | { __typename: 'Team' | 'EnterpriseTeam' | 'Bot' | 'Mannequin' }
 
+type ReviewRequestConnection = {
+  nodes: Array<{ requestedReviewer: RequestedReviewer | null } | null>
+  pageInfo: { hasNextPage: boolean }
+}
+
 export type RequestedPullRequest = Pick<PullRequestData, 'id' | 'number' | 'title' | 'url' | 'repository' | 'author' | 'state' | 'isDraft' | 'merged' | 'reviewDecision'> & {
   updatedAt: string
   headRefOid: string | null
   reviews: { nodes: Array<Pick<PullRequestData['reviews']['nodes'][number], 'state' | 'createdAt' | 'author'> | null> } | null
-  reviewRequests: {
-    nodes: Array<{ requestedReviewer: RequestedReviewer | null } | null>
-    pageInfo: { hasNextPage: boolean }
-  } | null
+  reviewRequests: ReviewRequestConnection | null
 }
 
 export type ReviewSnooze = {
