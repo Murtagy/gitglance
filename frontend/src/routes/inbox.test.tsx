@@ -292,6 +292,62 @@ it('keeps an in-flight review locked across thread switches', async () => {
   expect(submitPullRequestReview).toHaveBeenCalledTimes(1)
 })
 
+it('queues mark-read clicks and keyboard actions while another request is pending', async () => {
+  const user = userEvent.setup()
+  let finishFirst!: () => void
+  vi.mocked(markThreadRead).mockReturnValueOnce(new Promise<void>((resolve) => { finishFirst = resolve }))
+  renderInbox()
+  await user.click(await screen.findByRole('button', { name: 'Mark First PR as read' }))
+  const nextButton = await screen.findByRole('button', { name: 'Mark Second PR as read' })
+  expect(nextButton).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Mark read' })).toBeEnabled()
+  await user.keyboard('m')
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Mark Second PR as read' })).not.toBeInTheDocument())
+  expect(markThreadRead).toHaveBeenCalledTimes(1)
+  expect(markThreadRead).toHaveBeenLastCalledWith('token', '1')
+  await act(async () => { finishFirst() })
+  await waitFor(() => expect(markThreadRead).toHaveBeenLastCalledWith('token', '2'))
+  expect(screen.getByText('0 loaded')).toBeInTheDocument()
+})
+
+it.each(['first', 'second'])('restores only the %s failed notification, preserving other queued changes', async (failure) => {
+  const user = userEvent.setup()
+  let finishFirst!: () => void
+  let failFirst!: (error: Error) => void
+  let finishSecond!: () => void
+  let failSecond!: (error: Error) => void
+  vi.mocked(markThreadRead)
+    .mockReturnValueOnce(new Promise<void>((resolve, reject) => { finishFirst = resolve; failFirst = reject }))
+    .mockReturnValueOnce(new Promise<void>((resolve, reject) => { finishSecond = resolve; failSecond = reject }))
+  renderInbox()
+  await user.click(await screen.findByRole('button', { name: 'Mark First PR as read' }))
+  await user.click(await screen.findByRole('button', { name: 'Mark Second PR as read' }))
+  await act(async () => {
+    if (failure === 'first') failFirst(new Error('First request failed'))
+    else finishFirst()
+  })
+  await waitFor(() => expect(markThreadRead).toHaveBeenLastCalledWith('token', '2'))
+  if (failure === 'first') {
+    expect(await screen.findByRole('alert')).toHaveTextContent('First request failed')
+    expect(screen.getByRole('button', { name: 'Mark First PR as read' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Mark Second PR as read' })).not.toBeInTheDocument()
+  }
+  await act(async () => {
+    if (failure === 'second') failSecond(new Error('Second request failed'))
+    else finishSecond()
+  })
+  const title = failure === 'first' ? 'First PR' : 'Second PR'
+  const otherTitle = failure === 'first' ? 'Second PR' : 'First PR'
+  expect(await screen.findByRole('alert')).toHaveTextContent(title)
+  expect(screen.getByRole('button', { name: `Mark ${title} as read` })).toBeEnabled()
+  expect(screen.queryByRole('button', { name: `Mark ${otherTitle} as read` })).not.toBeInTheDocument()
+  expect(screen.getByText('1 loaded')).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  expect(markThreadRead).toHaveBeenLastCalledWith('token', failure === 'first' ? '1' : '2')
+  expect(screen.getByText('0 loaded')).toBeInTheDocument()
+})
+
 it('restores failed mark-read, explains failure, and retries original thread', async () => {
   const user = userEvent.setup()
   vi.mocked(markThreadRead).mockRejectedValueOnce(new Error('Network unavailable'))

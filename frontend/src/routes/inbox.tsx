@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { inboxRoute } from '../router'
 import { useAppContext } from '../lib/app-context'
@@ -254,7 +254,7 @@ export function InboxPage() {
   })
 
   const runRefresh = (manual = false) => {
-    if (refreshMutation.isPending || notificationsQuery.isFetching || snoozes.isSnoozing) return
+    if (refreshMutation.isPending || notificationsQuery.isFetching || snoozes.isSnoozing || queryClient.isMutating({ mutationKey: ['mark-read', token] })) return
     if (manual) {
       snoozes.refresh()
       if (viewerQuery.isError) void viewerQuery.refetch()
@@ -262,7 +262,14 @@ export function InboxPage() {
     refreshMutation.mutate()
   }
 
+  const pendingReadIds = useMutationState({
+    filters: { mutationKey: ['mark-read', token], status: 'pending' },
+    select: (mutation) => (mutation.state.variables as MarkReadRequest).thread.id,
+  })
+  const [readErrors, setReadErrors] = useState<{ request: MarkReadRequest; message: string }[]>([])
   const markReadMutation = useMutation({
+    mutationKey: ['mark-read', token],
+    scope: { id: 'mark-read' },
     mutationFn: async ({ thread, token: accountToken, viewerId, restored }: MarkReadRequest) => {
       await markThreadRead(accountToken, thread.id)
       if (viewerId && restored) {
@@ -273,6 +280,7 @@ export function InboxPage() {
       return thread
     },
     onMutate: async ({ thread, token: accountToken, show: accountShow }) => {
+      setReadErrors((errors) => errors.filter(({ request }) => request.token !== accountToken || request.thread.id !== thread.id))
       await queryClient.cancelQueries({ queryKey: ['notifications', accountToken] })
       const previous = queryClient.getQueryData<InboxSnapshot>(['notifications', accountToken, accountShow])
 
@@ -292,17 +300,26 @@ export function InboxPage() {
         }
       }
 
-      return { previous }
+      return { previousThread: previous?.threads.find((item) => item.id === thread.id) }
     },
-    onError: async (_error, { token: accountToken, show: accountShow }, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(['notifications', accountToken, accountShow], context.previous)
-        await saveInboxSnapshot(context.previous)
+    onError: async (error, request, context) => {
+      const { token: accountToken, show: accountShow, thread } = request
+      setReadErrors((errors) => [...errors, { request, message: error.message }])
+      if (context?.previousThread) {
+        const previousThread = context.previousThread
+        const current = queryClient.getQueryData<InboxSnapshot>(['notifications', accountToken, accountShow])
+        if (current) {
+          const next = { ...current, threads: sortNotificationThreadsOldestFirst([...current.threads.filter((item) => item.id !== thread.id), previousThread]) }
+          queryClient.setQueryData(['notifications', accountToken, accountShow], next)
+          await saveInboxSnapshot(next)
+        }
       }
     },
     onSuccess: async (_data, { token: accountToken }) => {
       window.setTimeout(() => {
-        void queryClient.invalidateQueries({ queryKey: ['notifications', accountToken] })
+        if (!queryClient.isMutating({ mutationKey: ['mark-read', accountToken] })) {
+          void queryClient.invalidateQueries({ queryKey: ['notifications', accountToken] })
+        }
       }, 5000)
     },
   })
@@ -381,7 +398,7 @@ export function InboxPage() {
         if (url) window.open(url, '_blank', 'noopener,noreferrer')
       } else if ((event.key === 'm' || event.key === 'M') && threads.length) {
         event.preventDefault()
-        if (selectedThread?.unread && !markReadMutation.isPending && !snoozes.isSnoozing && !notificationsQuery.isFetching) {
+        if (selectedThread?.unread && !pendingReadIds.includes(selectedThread.id) && !snoozes.isSnoozing && !notificationsQuery.isFetching) {
           markRead(selectedThread)
         }
       } else if (event.key === 'r' || event.key === 'R' || event.code === 'KeyR') {
@@ -392,7 +409,7 @@ export function InboxPage() {
 
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [markReadMutation, navigate, notificationsQuery.isFetching, previewQuery?.data, refreshMutation, selectedThread, snoozes.isSnoozing, threads])
+  }, [markReadMutation, pendingReadIds, navigate, notificationsQuery.isFetching, previewQuery?.data, refreshMutation, selectedThread, snoozes.isSnoozing, threads])
 
   useEffect(() => {
     if (!notificationsQuery.dataUpdatedAt || !inboxSignature) return
@@ -429,7 +446,7 @@ export function InboxPage() {
           </div>
         </div>
         <div className="controls">
-          <button className="btn success" onClick={() => runRefresh(true)} disabled={refreshMutation.isPending || notificationsQuery.isFetching || snoozes.isSnoozing}>Refresh Inbox</button>
+          <button className="btn success" onClick={() => runRefresh(true)} disabled={refreshMutation.isPending || notificationsQuery.isFetching || snoozes.isSnoozing || pendingReadIds.length > 0}>Refresh Inbox</button>
         </div>
       </div>
 
@@ -463,12 +480,12 @@ export function InboxPage() {
       {snoozes.error ? <div className="error" role="alert">{snoozes.error}</div> : null}
       {isSnoozedTab ? <div className="notice">Snoozes end on a new comment, submitted review, or review request. Clear all ends snoozes without changing GitHub read status.</div> : null}
 
-      {!isSnoozedTab && markReadMutation.isError ? (
-        <div className="error controls" role="alert">
-          <span>Could not mark “{markReadMutation.variables?.thread.subjectTitle}” as read. {markReadMutation.error.message}</span>
-          <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching} onClick={() => { if (markReadMutation.variables) markReadMutation.mutate(markReadMutation.variables) }}>Retry</button>
+      {!isSnoozedTab && readErrors.filter(({ request }) => request.token === token).map(({ request, message }) => (
+        <div key={request.thread.id} className="error controls" role="alert">
+          <span>Could not mark “{request.thread.subjectTitle}” as read. {message}</span>
+          <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching} onClick={() => markReadMutation.mutate(request)}>Retry</button>
         </div>
-      ) : null}
+      ))}
 
       <div className="grid-main">
         <div className="inbox-list">
@@ -516,7 +533,7 @@ export function InboxPage() {
                     type="button"
                     className="btn mark-read-btn"
                     onClick={() => markRead(thread)}
-                    disabled={markReadMutation.isPending || snoozes.isSnoozing || notificationsQuery.isFetching}
+                    disabled={pendingReadIds.includes(thread.id) || snoozes.isSnoozing || notificationsQuery.isFetching}
                     aria-label={`Mark ${thread.subjectTitle} as read`}
                     title="Mark read"
                   >
@@ -527,7 +544,7 @@ export function InboxPage() {
             )
           })}
           {!isSnoozedTab && notificationsQuery.data?.nextPage ? (
-            <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching || markReadMutation.isPending || snoozes.isSnoozing || loadMoreMutation.isPending} onClick={() => loadMoreMutation.mutate()}>
+            <button type="button" className="btn secondary" disabled={notificationsQuery.isFetching || pendingReadIds.length > 0 || snoozes.isSnoozing || loadMoreMutation.isPending} onClick={() => loadMoreMutation.mutate()}>
               {loadMoreMutation.isPending ? 'Loading…' : 'Load more'}
             </button>
           ) : null}
@@ -546,11 +563,11 @@ export function InboxPage() {
               isLoading={Boolean(previewQuery?.isLoading)}
               error={previewQuery?.error instanceof Error ? previewQuery.error.message : ''}
               onMarkRead={() => markRead(selectedThread)}
-              markingRead={markReadMutation.isPending}
+              markingRead={pendingReadIds.includes(selectedThread.id)}
               onSnooze={isSnoozedTab ? undefined : () => { if (previewQuery?.data?.pullRequest) snoozes.snooze(selectedThread, previewQuery.data.pullRequest) }}
               onRestore={selectedSnooze ? () => snoozes.restore(selectedSnooze) : undefined}
               restoring={snoozes.isRestoring}
-              canSnooze={snoozes.canSnooze && !markReadMutation.isPending}
+              canSnooze={snoozes.canSnooze && pendingReadIds.length === 0}
               snoozing={snoozes.isSnoozing}
               syncing={notificationsQuery.isFetching}
             />
